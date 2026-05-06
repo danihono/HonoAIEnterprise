@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="dark" data-density="comfortable" data-bg="black" data-accent="gold" data-sidebar="expanded">
+<head>
+  <meta charset="utf-8"/>
+  <title>Hono AI Enterprise</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="styles.css"/>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script>
+    const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+      "accent": "gold",
+      "density": "comfortable",
+      "bg": "charcoal",
+      "sidebar": "collapsed",
+      "currency": "BRL",
+      "typography": "mono_first",
+      "theme": "dark",
+      "showInsights": true,
+      "vignette": true
+    }/*EDITMODE-END*/;
+  </script>
+
+  <script type="text/babel" src="primitives.jsx"></script>
+  <script type="text/babel" src="shell.jsx"></script>
+  <script type="text/babel" src="dashboard.jsx"></script>
+  <script type="text/babel" src="ai.jsx"></script>
+  <script type="text/babel" src="modules.jsx"></script>
+  <script type="text/babel" src="overlays.jsx"></script>
+  <script type="text/babel" src="tweaks-panel.jsx"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback } = React;
+
+    const TYPOGRAPHY_PAIRS = {
+      inter: { sans: '"Inter Tight", sans-serif', mono: '"JetBrains Mono", monospace', display: '"Inter Tight", sans-serif' },
+      geist: { sans: '"Geist", "Inter Tight", sans-serif', mono: '"Geist Mono", "JetBrains Mono", monospace', display: '"Geist", sans-serif' },
+      mono_first: { sans: '"JetBrains Mono", monospace', mono: '"JetBrains Mono", monospace', display: '"JetBrains Mono", monospace' },
+      editorial: { sans: '"Inter Tight", sans-serif', mono: '"JetBrains Mono", monospace', display: '"Fraunces", "Inter Tight", serif' },
+    };
+
+    const App = () => {
+      const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+      const [page, setPage] = useState("dashboard");
+      const [cmdkOpen, setCmdkOpen] = useState(false);
+      const [copilotOpen, setCopilotOpen] = useState(false);
+      const [proposalFlow, setProposalFlow] = useState(false);
+      const [activeProposal, setActiveProposal] = useState(null);
+      const [aiInitialPrompt, setAiInitialPrompt] = useState(null);
+
+      // Apply data attrs to <html>
+      useEffect(() => {
+        const html = document.documentElement;
+        html.setAttribute("data-theme", t.theme);
+        html.setAttribute("data-density", t.density);
+        html.setAttribute("data-bg", t.bg);
+        html.setAttribute("data-accent", t.accent);
+        html.setAttribute("data-sidebar", t.sidebar);
+        const pair = TYPOGRAPHY_PAIRS[t.typography] || TYPOGRAPHY_PAIRS.inter;
+        html.style.setProperty("--font-sans", pair.sans);
+        html.style.setProperty("--font-mono", pair.mono);
+        html.style.setProperty("--font-display", pair.display);
+      }, [t]);
+
+      // Load Fraunces if needed
+      useEffect(() => {
+        if (t.typography === "editorial" && !document.querySelector('link[data-fraunces]')) {
+          const l = document.createElement("link");
+          l.rel = "stylesheet";
+          l.href = "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&display=swap";
+          l.setAttribute("data-fraunces", "1");
+          document.head.appendChild(l);
+        }
+      }, [t.typography]);
+
+      // Cmd+K
+      useEffect(() => {
+        const onKey = (e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+            e.preventDefault();
+            setCmdkOpen(o => !o);
+          }
+          // ⌘1..5
+          if ((e.metaKey || e.ctrlKey) && ["1","2","3","4","5"].includes(e.key)) {
+            e.preventDefault();
+            const map = { "1":"dashboard","2":"ai","3":"financeiro","4":"clientes","5":"propostas" };
+            setPage(map[e.key]);
+          }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+      }, []);
+
+      const toast = (m) => window.dispatchEvent(new CustomEvent('hono-toast', { detail: m }));
+
+      const handleAction = useCallback((action) => {
+        if (action === "new-proposal") setProposalFlow(true);
+        if (action === "import-bank") toast("Importar extrato — selecione arquivo OFX/CSV");
+        if (action === "new-client") toast("Novo cliente — formulário em breve");
+        if (action === "open-copilot") setCopilotOpen(true);
+        if (action === "ai-start") { setPage("ai"); setAiInitialPrompt("Como começo a usar o Hono AI Enterprise?"); }
+        if (action === "ai-import") { setPage("ai"); setAiInitialPrompt("Como importo meus dados financeiros?"); }
+        if (action === "ai-features") { setPage("ai"); setAiInitialPrompt("Quais funcionalidades existem?"); }
+      }, []);
+
+      const crumbs = {
+        dashboard: ["Hono Enterprise", "Operação", "Dashboard Executivo"],
+        ai: ["Hono Enterprise", "IA", "Central"],
+        financeiro: ["Hono Enterprise", "Finanças", "Financeiro"],
+        clientes: ["Hono Enterprise", "Comercial", "Clientes"],
+        propostas: ["Hono Enterprise", "Comercial", "Propostas"],
+        simuladores: ["Hono Enterprise", "Finanças", "Simuladores"],
+        relatorios: ["Hono Enterprise", "Finanças", "Relatórios"],
+        documentos: ["Hono Enterprise", "Produtividade", "Documentos"],
+        tarefas: ["Hono Enterprise", "Produtividade", "Tarefas"],
+        configuracoes: ["Hono Enterprise", "Configurações"],
+      }[page] || ["Hono Enterprise"];
+
+      const renderPage = () => {
+        if (page === "dashboard") return <Dashboard
+            currency={t.currency}
+            onOpenProposal={(p) => setActiveProposal(p)}
+            onOpenAI={() => setPage("ai")}
+          />;
+        if (page === "ai") return <AICentral initialPrompt={aiInitialPrompt}/>;
+        if (page === "financeiro") return <FinanceiroModule currency={t.currency}/>;
+        if (page === "clientes") return <ClientesModule/>;
+        if (page === "propostas") return <PropostasModule onCreate={() => setProposalFlow(true)} onOpen={(p) => setActiveProposal(p)}/>;
+        if (page === "simuladores") return <SimpleModule
+          title="Simuladores IA"
+          subtitle="ROI · Lucro · Precificação · CAC/LTV · Comissão"
+          hint="Simuladores financeiros com IA conversacional"
+        />;
+        if (page === "relatorios") return <SimpleModule
+          title="Relatórios"
+          subtitle="Mensal · Trimestral · Anual · DRE · Performance"
+          hint="Relatórios executivos com análise de IA"
+        />;
+        if (page === "documentos") return <SimpleModule
+          title="Documentos"
+          subtitle="Central de PDFs, propostas, comprovantes, contratos"
+          hint="Drag & drop · OCR · organização automática"
+        />;
+        if (page === "tarefas") return <SimpleModule
+          title="Tarefas e Agenda"
+          subtitle="7 pendentes · 3 vencendo hoje"
+          hint="Tarefas, lembretes e follow-ups com sugestões da IA"
+        />;
+        if (page === "configuracoes") return <SimpleModule
+          title="Configurações"
+          subtitle="Identidade visual · Templates · Logo · Integrações"
+          hint="Preferências da empresa"
+        />;
+        return null;
+      };
+
+      return (
+        <div className="app">
+          <Sidebar active={page} onNavigate={setPage} collapsed={t.sidebar === "collapsed"}/>
+          <Topbar
+            crumbs={crumbs}
+            onCmdK={() => setCmdkOpen(true)}
+            onCopilot={() => setCopilotOpen(o => !o)}
+            copilotOpen={copilotOpen}
+            theme={t.theme}
+            onTheme={() => setTweak("theme", t.theme === "dark" ? "light" : "dark")}
+            onTweakSidebar={() => setTweak("sidebar", t.sidebar === "collapsed" ? "expanded" : "collapsed")}
+          />
+          <main className="main" data-screen-label={"main-" + page}>
+            {renderPage()}
+            {copilotOpen && page !== "ai" && <Copilot onClose={() => setCopilotOpen(false)}/>}
+            {activeProposal && <ProposalDrawer proposal={activeProposal} onClose={() => setActiveProposal(null)}/>}
+          </main>
+          <StatusBar accent={t.accent} density={t.density} bg={t.bg} currency={t.currency}/>
+
+          {cmdkOpen && <CommandPalette
+            onClose={() => setCmdkOpen(false)}
+            onNavigate={setPage}
+            onAction={handleAction}
+          />}
+          {proposalFlow && <ProposalFlow
+            onClose={() => setProposalFlow(false)}
+            onComplete={() => setProposalFlow(false)}
+          />}
+
+          <TweaksPanel title="Tweaks">
+            <TweakSection title="Aparência">
+              <TweakRadio label="Tema" value={t.theme} options={[
+                { value: "dark", label: "Dark" },
+                { value: "light", label: "Light" }
+              ]} onChange={v => setTweak("theme", v)}/>
+              <TweakRadio label="Background" value={t.bg} options={[
+                { value: "black", label: "Black" },
+                { value: "graphite", label: "Graphite" },
+                { value: "charcoal", label: "Charcoal" }
+              ]} onChange={v => setTweak("bg", v)}/>
+              <TweakRadio label="Accent" value={t.accent} options={[
+                { value: "gold", label: "Gold" },
+                { value: "red", label: "Red" },
+                { value: "both", label: "Both" }
+              ]} onChange={v => setTweak("accent", v)}/>
+            </TweakSection>
+
+            <TweakSection title="Tipografia & Densidade">
+              <TweakSelect label="Pareamento" value={t.typography} options={[
+                { value: "inter", label: "Inter Tight + JetBrains Mono" },
+                { value: "geist", label: "Geist + Geist Mono" },
+                { value: "mono_first", label: "Mono-first (terminal)" },
+                { value: "editorial", label: "Fraunces + Inter (editorial)" }
+              ]} onChange={v => setTweak("typography", v)}/>
+              <TweakRadio label="Densidade" value={t.density} options={[
+                { value: "compact", label: "Compact" },
+                { value: "comfortable", label: "Balanced" },
+                { value: "spacious", label: "Spacious" }
+              ]} onChange={v => setTweak("density", v)}/>
+              <TweakRadio label="Sidebar" value={t.sidebar} options={[
+                { value: "expanded", label: "Expandida" },
+                { value: "collapsed", label: "Colapsada" }
+              ]} onChange={v => setTweak("sidebar", v)}/>
+            </TweakSection>
+
+            <TweakSection title="Dados">
+              <TweakRadio label="Moeda" value={t.currency} options={[
+                { value: "BRL", label: "R$ BRL" },
+                { value: "USD", label: "$ USD" }
+              ]} onChange={v => setTweak("currency", v)}/>
+              <TweakToggle label="Insights da IA no dashboard" value={t.showInsights} onChange={v => setTweak("showInsights", v)}/>
+            </TweakSection>
+
+            <TweakSection title="Atalhos">
+              <TweakButton label="⌘K · Paleta de comandos" onClick={() => setCmdkOpen(true)}/>
+              <TweakButton label="Criar proposta com IA" onClick={() => setProposalFlow(true)}/>
+              <TweakButton label="Abrir Copilot" onClick={() => setCopilotOpen(true)}/>
+            </TweakSection>
+          </TweaksPanel>
+        </div>
+      );
+    };
+
+    // Mount
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App/>);
+  </script>
+</body>
+</html>
