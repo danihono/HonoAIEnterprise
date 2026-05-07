@@ -670,8 +670,8 @@ function FinancePage({
                   {t.kind === "receita" ? <CircleDollarSign size={16} /> : <CreditCard size={16} />}
                 </div>
                 <div className="transaction-info">
-                  <strong>{t.kind === "receita" ? (t.clienteNome || "—") : (t.fornecedor || "—")}</strong>
-                  <span>{t.servico || t.categoria || "—"} · {t.data}</span>
+                  <strong>{t.clienteNome || "—"}</strong>
+                  <span>{t.kind === "despesa" && t.fornecedor ? `${t.fornecedor} · ` : ""}{t.servico || t.categoria || "—"} · {t.data}</span>
                 </div>
                 <div className={`transaction-value ${t.kind}`}>
                   {t.kind === "receita" ? "+" : "-"}{currency.format(parseValue(t.valor))}
@@ -795,25 +795,24 @@ function TransactionFormModal({
         </div>
         <div className="transaction-intro">
           <h3>{isRevenue ? "Registrar receita" : "Registrar despesa"}</h3>
-          <p>{isRevenue ? "Informe o cliente, valor e condição do recebimento." : "Informe o fornecedor, categoria, valor e vencimento do custo."}</p>
+          <p>{isRevenue ? "Informe o cliente, valor e condição do recebimento." : "Informe o cliente, fornecedor, categoria, valor e vencimento do custo."}</p>
         </div>
         <div className="transaction-form-grid">
           <label>
             <span>Valor</span>
             <input required inputMode="decimal" placeholder="R$ 0,00" value={form.valor} onChange={set("valor")} />
           </label>
-          {isRevenue ? (
-            <label>
-              <span>Cliente</span>
-              <select required value={form.clienteId} onChange={set("clienteId")}>
-                <option value="" disabled>{clients.length === 0 ? "Nenhum cliente cadastrado" : "Selecione um cliente"}</option>
-                {clients.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
-              </select>
-            </label>
-          ) : (
+          <label>
+            <span>Cliente</span>
+            <select required value={form.clienteId} onChange={set("clienteId")}>
+              <option value="" disabled>{clients.length === 0 ? "Nenhum cliente cadastrado" : "Selecione um cliente"}</option>
+              {clients.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+            </select>
+          </label>
+          {!isRevenue && (
             <label>
               <span>Fornecedor</span>
-              <input required placeholder="Ex: Google, Meta, contador..." value={form.fornecedor} onChange={set("fornecedor")} />
+              <input placeholder="Ex: Google, Meta, contador..." value={form.fornecedor} onChange={set("fornecedor")} />
             </label>
           )}
           <label>
