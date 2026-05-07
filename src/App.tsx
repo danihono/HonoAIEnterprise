@@ -5,9 +5,12 @@ import {
   Bell,
   Bot,
   BriefcaseBusiness,
+  Building2,
   CalendarDays,
+  Check,
   CheckCircle2,
   ChevronDown,
+  ChevronUp,
   CircleDollarSign,
   Command,
   CreditCard,
@@ -18,12 +21,16 @@ import {
   ImageIcon,
   LayoutDashboard,
   Moon,
+  Palette,
   PanelLeftClose,
   PanelLeftOpen,
+  Pencil,
   Plus,
+  RotateCcw,
   Search,
   Settings,
   Sparkles,
+  Store,
   Trash2,
   Users,
   WandSparkles,
@@ -34,6 +41,7 @@ import {
   Client,
   Proposal,
   Transaction,
+  TransactionOccurrenceOverride,
   TransactionKind,
   addClient,
   addProposal,
@@ -44,7 +52,9 @@ import {
   subscribeClients,
   subscribeProposals,
   subscribeTransactions,
+  updateClient,
   updateProposal,
+  updateTransaction,
 } from "./lib/db";
 import {
   DocumentSection,
@@ -95,6 +105,35 @@ const navItems: NavItem[] = [
 ];
 
 const cycleFilters = ["Ciclo atual", "Ciclo anterior", "Trimestre", "Ano"];
+
+const CLIENT_CARD_COLORS = [
+  { value: "#d8b75d", label: "Ouro" },
+  { value: "#72c58a", label: "Verde" },
+  { value: "#63b3ed", label: "Azul" },
+  { value: "#f87171", label: "Coral" },
+  { value: "#a78bfa", label: "Violeta" },
+  { value: "#94a3b8", label: "Grafite" },
+];
+
+const CLIENT_ICON_OPTIONS = [
+  { value: "initials", label: "Iniciais", icon: null },
+  { value: "briefcase", label: "Negocios", icon: <BriefcaseBusiness size={18} /> },
+  { value: "building", label: "Empresa", icon: <Building2 size={18} /> },
+  { value: "store", label: "Loja", icon: <Store size={18} /> },
+  { value: "finance", label: "Financeiro", icon: <CircleDollarSign size={18} /> },
+  { value: "ai", label: "IA", icon: <Bot size={18} /> },
+  { value: "spark", label: "Premium", icon: <Sparkles size={18} /> },
+];
+
+function hexToRgba(hex: string, alpha: number) {
+  const normalized = hex.replace("#", "");
+  if (!/^[0-9a-f]{6}$/i.test(normalized)) return `rgba(216, 183, 93, ${alpha})`;
+  const value = parseInt(normalized, 16);
+  const r = (value >> 16) & 255;
+  const g = (value >> 8) & 255;
+  const b = value & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
 
 const currency = new Intl.NumberFormat("pt-BR", {
   style: "currency",
@@ -179,6 +218,10 @@ export function App() {
           <ClientesPage
             clients={clients}
             onNewClient={() => setClientModalOpen(true)}
+            onUpdateClient={async (id, data) => {
+              await updateClient(id, data);
+              showToast("Cliente personalizado.");
+            }}
             onDeleteClient={async (id) => {
               await deleteClient(id);
               showToast("Cliente removido.");
@@ -443,16 +486,17 @@ function DashboardPage({
 }) {
   const [range, setRange] = useState(cycleFilters[0]);
 
-  const receitas = transactions.filter((t) => t.kind === "receita");
-  const despesas = transactions.filter((t) => t.kind === "despesa");
-  const totalReceitas = receitas.reduce((s, t) => s + parseValue(t.valor), 0);
-  const totalDespesas = despesas.reduce((s, t) => s + parseValue(t.valor), 0);
+  const allOccurrences = expandFinanceOccurrences(transactions);
+  const dashboardRange = getDashboardRange(range);
+  const rangeOccurrences = occurrencesInRange(allOccurrences, dashboardRange.start, dashboardRange.end);
+  const totalReceitas = sumOccurrences(rangeOccurrences, "receita");
+  const totalDespesas = sumOccurrences(rangeOccurrences, "despesa");
   const resultado = totalReceitas - totalDespesas;
   const margem = totalReceitas > 0 ? ((resultado / totalReceitas) * 100).toFixed(1) : "0";
 
-  const pendentes = receitas
-    .filter((t) => t.status === "pendente")
-    .reduce((s, t) => s + parseValue(t.valor), 0);
+  const pendentes = rangeOccurrences
+    .filter((occ) => occ.kind === "receita" && occ.status === "pendente")
+    .reduce((s, occ) => s + occ.amount, 0);
 
   const kpis = [
     { label: "Clientes totais", value: String(clients.length), note: "Base inteira, não apenas o mês", accent: "gold" },
@@ -463,21 +507,16 @@ function DashboardPage({
     { label: "Contas a receber", value: currency.format(pendentes), note: "Receitas com status pendente", accent: "gold" },
   ];
 
-  const monthLabels = ["07", "12", "17", "22", "27", "02", "07"];
-  const monthlyFlow = monthLabels.map((label) => ({ label, receita: 0, despesa: 0 }));
-
-  const annualFlow = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"].map((label, idx) => {
-    const month = idx + 1;
-    const r = receitas.filter((t) => new Date(t.data).getMonth() + 1 === month).reduce((s, t) => s + parseValue(t.valor), 0);
-    const d = despesas.filter((t) => new Date(t.data).getMonth() + 1 === month).reduce((s, t) => s + parseValue(t.valor), 0);
-    return { label, receita: r, despesa: d };
-  });
+  const monthlyFlow = buildMonthlyFlow(allOccurrences, dashboardRange.start, dashboardRange.months);
+  const annualFlow = buildMonthlyFlow(allOccurrences, startOfMonth(), 12);
 
   const catTotals: Record<string, number> = {};
-  despesas.forEach((t) => {
-    const cat = t.categoria || "Outros";
-    catTotals[cat] = (catTotals[cat] || 0) + parseValue(t.valor);
-  });
+  rangeOccurrences
+    .filter((occ) => occ.kind === "despesa")
+    .forEach((occ) => {
+      const cat = occ.transaction.categoria || "Outros";
+      catTotals[cat] = (catTotals[cat] || 0) + occ.amount;
+    });
   const expenseMix = [
     { label: "Equipe", value: catTotals["Equipe"] || 0, tone: "gold" },
     { label: "Ferramentas", value: catTotals["Ferramentas"] || 0, tone: "green" },
@@ -596,6 +635,182 @@ function DashboardPage({
   );
 }
 
+// ── Finance helpers ───────────────────────────────────────────────────────────
+
+const MONTHS_PT = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+
+function intervalMonths(rec: string): number {
+  if (rec === "trimestral") return 3;
+  if (rec === "anual") return 12;
+  return 1;
+}
+
+function formatOccurrenceDate(dateStr: string): string {
+  const [y, m, d] = dateStr.split("-");
+  return `${MONTHS_PT[parseInt(m, 10) - 1]} ${y} · dia ${parseInt(d, 10)}`;
+}
+
+function paidStatus(kind: TransactionKind): string {
+  return kind === "receita" ? "recebida" : "paga";
+}
+
+function pendingStatus(kind: TransactionKind): string {
+  return kind === "receita" ? "pendente" : "aberta";
+}
+
+function isStatusPaid(status: string): boolean {
+  return status === "paga" || status === "recebida";
+}
+
+type FinanceOccurrence = {
+  id: string;
+  transactionId: string;
+  baseDate: string;
+  date: string;
+  index: number;
+  transaction: Transaction;
+  kind: TransactionKind;
+  amount: number;
+  valueText: string;
+  status: string;
+  pagamento: string;
+  observacoes: string;
+};
+
+type FinancePeriodKey = "month" | "6m" | "12m";
+
+const financePeriodOptions: Array<{ key: FinancePeriodKey; label: string; months: number }> = [
+  { key: "month", label: "Este mes", months: 1 },
+  { key: "6m", label: "6 meses", months: 6 },
+  { key: "12m", label: "1 ano", months: 12 },
+];
+
+function toDate(dateStr: string): Date {
+  return new Date(`${dateStr}T12:00:00`);
+}
+
+function toDateStr(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function startOfMonth(date = new Date()): Date {
+  return new Date(date.getFullYear(), date.getMonth(), 1, 12);
+}
+
+function addMonths(date: Date, months: number): Date {
+  const next = new Date(date);
+  next.setMonth(next.getMonth() + months);
+  return next;
+}
+
+function monthLabel(date: Date): string {
+  return `${MONTHS_PT[date.getMonth()]}/${String(date.getFullYear()).slice(2)}`;
+}
+
+function isRecurringTransaction(t: Transaction): boolean {
+  return t.recorrencia !== "nao" && (!!t.dataFim || (t.numParcelas ?? 0) > 1);
+}
+
+function getTransactionBaseDates(t: Transaction): string[] {
+  if (!isRecurringTransaction(t)) return [t.data];
+
+  const dates: string[] = [];
+  const count = Math.max(1, Math.min(120, t.numParcelas ?? 120));
+  let current = toDate(t.data);
+  const end = t.dataFim ? toDate(t.dataFim) : null;
+
+  while (dates.length < count && (!end || current <= end)) {
+    dates.push(toDateStr(current));
+    current = addMonths(current, intervalMonths(t.recorrencia));
+  }
+
+  return dates;
+}
+
+function normalizeOccurrenceOverride(value: string | TransactionOccurrenceOverride | undefined): TransactionOccurrenceOverride {
+  if (typeof value === "string") return { status: value };
+  return value ?? {};
+}
+
+function getOccurrenceOverride(t: Transaction, baseDate: string): TransactionOccurrenceOverride {
+  return normalizeOccurrenceOverride(t.ocorrencias?.[baseDate]);
+}
+
+function mergeOccurrenceOverride(
+  t: Transaction,
+  baseDate: string,
+  patch: TransactionOccurrenceOverride
+): Transaction["ocorrencias"] {
+  const current = getOccurrenceOverride(t, baseDate);
+  return {
+    ...(t.ocorrencias || {}),
+    [baseDate]: { ...current, ...patch },
+  };
+}
+
+function expandFinanceOccurrences(transactions: Transaction[]): FinanceOccurrence[] {
+  return transactions.flatMap((transaction) =>
+    getTransactionBaseDates(transaction).flatMap((baseDate, index) => {
+      const override = getOccurrenceOverride(transaction, baseDate);
+      if (override.deleted) return [];
+
+      const valueText = override.valor ?? transaction.valor;
+      const date = override.data || baseDate;
+      return [{
+        id: `${transaction.id}:${baseDate}`,
+        transactionId: transaction.id,
+        baseDate,
+        date,
+        index,
+        transaction,
+        kind: transaction.kind,
+        amount: parseValue(valueText),
+        valueText,
+        status: override.status ?? transaction.status,
+        pagamento: override.pagamento ?? transaction.pagamento,
+        observacoes: override.observacoes ?? "",
+      }];
+    })
+  );
+}
+
+function occurrencesInRange(occurrences: FinanceOccurrence[], start: Date, end: Date): FinanceOccurrence[] {
+  return occurrences.filter((occ) => {
+    const date = toDate(occ.date);
+    return date >= start && date < end;
+  });
+}
+
+function sumOccurrences(occurrences: FinanceOccurrence[], kind: TransactionKind): number {
+  return occurrences
+    .filter((occ) => occ.kind === kind)
+    .reduce((sum, occ) => sum + occ.amount, 0);
+}
+
+function buildMonthlyFlow(occurrences: FinanceOccurrence[], start: Date, months: number) {
+  return Array.from({ length: months }, (_, index) => {
+    const monthStart = addMonths(start, index);
+    const monthEnd = addMonths(monthStart, 1);
+    const monthOccurrences = occurrencesInRange(occurrences, monthStart, monthEnd);
+    return {
+      label: monthLabel(monthStart),
+      receita: sumOccurrences(monthOccurrences, "receita"),
+      despesa: sumOccurrences(monthOccurrences, "despesa"),
+    };
+  });
+}
+
+function getDashboardRange(range: string) {
+  const current = startOfMonth();
+  if (range === "Ciclo anterior") {
+    const start = addMonths(current, -1);
+    return { start, end: current, months: 1 };
+  }
+  if (range === "Trimestre") return { start: current, end: addMonths(current, 3), months: 3 };
+  if (range === "Ano") return { start: current, end: addMonths(current, 12), months: 12 };
+  return { start: current, end: addMonths(current, 1), months: 1 };
+}
+
 // ── Finance ───────────────────────────────────────────────────────────────────
 
 function FinancePage({
@@ -611,16 +826,56 @@ function FinancePage({
 }) {
   const [transactionKind, setTransactionKind] = useState<TransactionKind | null>(null);
   const [transactionChooserOpen, setTransactionChooserOpen] = useState(false);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [editingOccurrence, setEditingOccurrence] = useState<FinanceOccurrence | null>(null);
+  const [projectionRange, setProjectionRange] = useState<FinancePeriodKey>("month");
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const openTransaction = (kind?: TransactionKind) => {
     if (kind) { setTransactionKind(kind); setTransactionChooserOpen(false); return; }
     setTransactionChooserOpen(true);
   };
 
-  const receitas = transactions.filter((t) => t.kind === "receita");
-  const despesas = transactions.filter((t) => t.kind === "despesa");
-  const totalReceitas = receitas.reduce((s, t) => s + parseValue(t.valor), 0);
-  const totalDespesas = despesas.reduce((s, t) => s + parseValue(t.valor), 0);
+  const toggleExpand = (id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const togglePaid = async (t: Transaction) => {
+    const next = isStatusPaid(t.status) ? pendingStatus(t.kind) : paidStatus(t.kind);
+    await updateTransaction(t.id, { status: next });
+    onToast(`Marcado como ${next}.`);
+  };
+
+  const toggleOccurrence = async (t: Transaction, dateStr: string, currentlyPaid: boolean) => {
+    const next = currentlyPaid ? pendingStatus(t.kind) : paidStatus(t.kind);
+    const ocorrencias = mergeOccurrenceOverride(t, dateStr, { status: next });
+    await updateTransaction(t.id, { ocorrencias });
+    onToast(`Parcela de ${formatOccurrenceDate(dateStr)} marcada como ${next}.`);
+  };
+
+  const deleteOccurrence = async (occ: FinanceOccurrence) => {
+    const ocorrencias = mergeOccurrenceOverride(occ.transaction, occ.baseDate, { deleted: true });
+    await updateTransaction(occ.transactionId, { ocorrencias });
+    onToast(`Parcela de ${formatOccurrenceDate(occ.date)} removida.`);
+  };
+
+  const allOccurrences = expandFinanceOccurrences(transactions);
+  const currentMonthStart = startOfMonth();
+  const currentMonthEnd = addMonths(currentMonthStart, 1);
+  const currentMonthOccurrences = occurrencesInRange(allOccurrences, currentMonthStart, currentMonthEnd);
+  const receitas = currentMonthOccurrences.filter((occ) => occ.kind === "receita");
+  const despesas = currentMonthOccurrences.filter((occ) => occ.kind === "despesa");
+  const totalReceitas = sumOccurrences(currentMonthOccurrences, "receita");
+  const totalDespesas = sumOccurrences(currentMonthOccurrences, "despesa");
+  const selectedPeriod = financePeriodOptions.find((item) => item.key === projectionRange) ?? financePeriodOptions[0];
+  const projectionData = buildMonthlyFlow(allOccurrences, currentMonthStart, selectedPeriod.months);
+  const projectionOccurrences = occurrencesInRange(allOccurrences, currentMonthStart, addMonths(currentMonthStart, selectedPeriod.months));
+  const projectedReceitas = sumOccurrences(projectionOccurrences, "receita");
+  const projectedDespesas = sumOccurrences(projectionOccurrences, "despesa");
 
   return (
     <div className="page finance-page">
@@ -645,6 +900,32 @@ function FinancePage({
         ))}
       </section>
 
+      <Card className="chart-card finance-projection-card">
+        <div className="card-heading">
+          <div>
+            <h3>Projecao financeira</h3>
+            <p>Parcelas por mes, incluindo recorrencias futuras.</p>
+          </div>
+          <div className="range-control" aria-label="Periodo da projecao">
+            {financePeriodOptions.map((item) => (
+              <button
+                key={item.key}
+                className={projectionRange === item.key ? "active" : ""}
+                onClick={() => setProjectionRange(item.key)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <FinancialBarChart data={projectionData} compact={selectedPeriod.months > 1} />
+        <div className="projection-summary">
+          <span>Receitas: <strong>{currency.format(projectedReceitas)}</strong></span>
+          <span>Despesas: <strong>{currency.format(projectedDespesas)}</strong></span>
+          <span>Saldo: <strong>{currency.format(projectedReceitas - projectedDespesas)}</strong></span>
+        </div>
+      </Card>
+
       {transactions.length === 0 ? (
         <Card className="empty-composer">
           <CreditCard size={26} />
@@ -664,24 +945,87 @@ function FinancePage({
             </button>
           </div>
           <div className="transaction-list">
-            {transactions.map((t) => (
-              <div key={t.id} className="transaction-row">
-                <div className={`transaction-badge ${t.kind}`}>
-                  {t.kind === "receita" ? <CircleDollarSign size={16} /> : <CreditCard size={16} />}
-                </div>
-                <div className="transaction-info">
-                  <strong>{t.clienteNome || "—"}</strong>
-                  <span>{t.kind === "despesa" && t.fornecedor ? `${t.fornecedor} · ` : ""}{t.servico || t.categoria || "—"} · {t.data}</span>
-                </div>
-                <div className={`transaction-value ${t.kind}`}>
-                  {t.kind === "receita" ? "+" : "-"}{currency.format(parseValue(t.valor))}
-                </div>
-                <span className={`status-badge ${t.status}`}>{t.status}</span>
-                <button className="icon-button danger" onClick={() => onDeleteTransaction(t.id)} aria-label="Remover">
-                  <Trash2 size={15} />
-                </button>
-              </div>
-            ))}
+            {transactions.map((t) => {
+              const isRecurring = isRecurringTransaction(t);
+              const isExpanded = expandedIds.has(t.id);
+              const occurrences = allOccurrences.filter((occ) => occ.transactionId === t.id);
+              const paidCount = occurrences.filter((occ) => isStatusPaid(occ.status)).length;
+
+              return (
+                <React.Fragment key={t.id}>
+                  <div className="transaction-row">
+                    <div className={`transaction-badge ${t.kind}`}>
+                      {t.kind === "receita" ? <CircleDollarSign size={16} /> : <CreditCard size={16} />}
+                    </div>
+                    <div className="transaction-info">
+                      <strong>{t.clienteNome || "—"}</strong>
+                      <span>
+                        {t.kind === "despesa" && t.fornecedor ? `${t.fornecedor} · ` : ""}
+                        {t.servico || t.categoria || "—"} · {t.data}
+                        {isRecurring && <> · <em className="recurrence-tag">{t.recorrencia}</em></>}
+                      </span>
+                    </div>
+                    <div className={`transaction-value ${t.kind}`}>
+                      {t.kind === "receita" ? "+" : "-"}{currency.format(parseValue(t.valor))}
+                    </div>
+                    {isRecurring ? (
+                      <span className="occurrence-counter">{paidCount}/{occurrences.length} pagas</span>
+                    ) : (
+                      <span className={`status-badge ${t.status}`}>{t.status}</span>
+                    )}
+                    <div className="row-actions">
+                      {!isRecurring && (
+                        <button
+                          className={`icon-button ${isStatusPaid(t.status) ? "" : "success"}`}
+                          onClick={() => togglePaid(t)}
+                          title={isStatusPaid(t.status) ? "Marcar como pendente" : "Marcar como paga"}
+                        >
+                          {isStatusPaid(t.status) ? <RotateCcw size={14} /> : <Check size={14} />}
+                        </button>
+                      )}
+                      <button className="icon-button" onClick={() => setEditingTransaction(t)} title="Editar">
+                        <Pencil size={14} />
+                      </button>
+                      {isRecurring && (
+                        <button className="icon-button" onClick={() => toggleExpand(t.id)} title={isExpanded ? "Recolher parcelas" : "Ver parcelas"}>
+                          {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                        </button>
+                      )}
+                      <button className="icon-button danger" onClick={() => onDeleteTransaction(t.id)} title="Remover">
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                  {isRecurring && isExpanded && occurrences.map((occ) => {
+                    const paid = isStatusPaid(occ.status);
+                    return (
+                      <div key={occ.id} className="occurrence-row">
+                        <span className="occurrence-date">
+                          {formatOccurrenceDate(occ.date)} - Parcela {occ.index + 1}
+                        </span>
+                        <span className={`transaction-value ${occ.kind}`}>
+                          {occ.kind === "receita" ? "+" : "-"}{currency.format(occ.amount)}
+                        </span>
+                        <span className={`status-badge ${occ.status}`}>{occ.status}</span>
+                        <button
+                          className={`icon-button ${paid ? "" : "success"}`}
+                          onClick={() => toggleOccurrence(t, occ.baseDate, paid)}
+                          title={paid ? "Marcar como pendente" : "Marcar como paga"}
+                        >
+                          {paid ? <RotateCcw size={13} /> : <Check size={13} />}
+                        </button>
+                        <button className="icon-button" onClick={() => setEditingOccurrence(occ)} title="Editar parcela">
+                          <Pencil size={13} />
+                        </button>
+                        <button className="icon-button danger" onClick={() => deleteOccurrence(occ)} title="Remover parcela">
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </React.Fragment>
+              );
+            })}
           </div>
         </Card>
       )}
@@ -699,6 +1043,32 @@ function FinancePage({
             await addTransaction({ ...data, kind: transactionKind });
             setTransactionKind(null);
             onToast(`${transactionKind === "receita" ? "Receita" : "Despesa"} registrada.`);
+          }}
+        />
+      )}
+      {editingTransaction && (
+        <TransactionFormModal
+          kind={editingTransaction.kind}
+          clients={clients}
+          initialData={editingTransaction}
+          onBack={() => setEditingTransaction(null)}
+          onClose={() => setEditingTransaction(null)}
+          onSave={async (data) => {
+            await updateTransaction(editingTransaction.id, { ...data });
+            setEditingTransaction(null);
+            onToast("Lançamento atualizado.");
+          }}
+        />
+      )}
+      {editingOccurrence && (
+        <OccurrenceFormModal
+          occurrence={editingOccurrence}
+          onClose={() => setEditingOccurrence(null)}
+          onSave={async (data) => {
+            const ocorrencias = mergeOccurrenceOverride(editingOccurrence.transaction, editingOccurrence.baseDate, data);
+            await updateTransaction(editingOccurrence.transactionId, { ocorrencias });
+            setEditingOccurrence(null);
+            onToast("Parcela atualizada.");
           }}
         />
       )}
@@ -734,36 +1104,135 @@ function TransactionTypeModal({ onClose, onSelect }: { onClose: () => void; onSe
   );
 }
 
+function OccurrenceFormModal({
+  occurrence,
+  onClose,
+  onSave,
+}: {
+  occurrence: FinanceOccurrence;
+  onClose: () => void;
+  onSave: (data: TransactionOccurrenceOverride) => Promise<void>;
+}) {
+  const isRevenue = occurrence.kind === "receita";
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    valor: occurrence.valueText,
+    data: occurrence.date,
+    status: occurrence.status,
+    pagamento: occurrence.pagamento,
+    observacoes: occurrence.observacoes,
+  });
+
+  const set = (field: keyof typeof form) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+      setForm((prev) => ({ ...prev, [field]: e.target.value }));
+    };
+
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await onSave({
+        valor: form.valor,
+        data: form.data,
+        status: form.status,
+        pagamento: form.pagamento,
+        observacoes: form.observacoes,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <form className="transaction-modal occurrence-modal" onClick={(e) => e.stopPropagation()} onSubmit={save}>
+        <div className="panel-head">
+          <div>
+            <span className="eyebrow">Parcela</span>
+            <strong>Editar parcela {occurrence.index + 1}</strong>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Fechar"><X size={17} /></button>
+        </div>
+        <div className="transaction-form-grid">
+          <label>
+            <span>Valor da parcela</span>
+            <input required inputMode="decimal" value={form.valor} onChange={set("valor")} />
+          </label>
+          <label>
+            <span>Data da parcela</span>
+            <input required type="date" value={form.data} onChange={set("data")} />
+          </label>
+          <label>
+            <span>Status</span>
+            <select value={form.status} onChange={set("status")}>
+              {isRevenue ? (
+                <><option value="recebida">Recebida</option><option value="pendente">Pendente</option><option value="atrasada">Atrasada</option></>
+              ) : (
+                <><option value="paga">Paga</option><option value="aberta">Em aberto</option><option value="atrasada">Atrasada</option></>
+              )}
+            </select>
+          </label>
+          <label>
+            <span>Forma de pagamento</span>
+            <select value={form.pagamento} onChange={set("pagamento")}>
+              <option value="">Selecione</option>
+              <option>Pix</option><option>Boleto</option><option>Cartao</option><option>Transferencia</option><option>Dinheiro</option>
+            </select>
+          </label>
+          <label className="wide">
+            <span>Observacoes da parcela</span>
+            <textarea rows={3} value={form.observacoes} onChange={set("observacoes")} />
+          </label>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="secondary-button" onClick={onClose}>Cancelar</button>
+          <button className="primary-button" type="submit" disabled={saving}>
+            {saving ? "Salvando..." : "Salvar parcela"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 type TransactionFormData = Omit<Transaction, "id" | "createdAt" | "kind">;
 
 function TransactionFormModal({
   kind,
   clients,
+  initialData,
   onBack,
   onClose,
   onSave,
 }: {
   kind: TransactionKind;
   clients: Client[];
+  initialData?: Transaction;
   onBack: () => void;
   onClose: () => void;
   onSave: (data: TransactionFormData) => Promise<void>;
 }) {
   const isRevenue = kind === "receita";
+  const isEditing = !!initialData;
   const [saving, setSaving] = useState(false);
+  const [numParcelas, setNumParcelas] = useState<number>(initialData?.numParcelas ?? 1);
   const [form, setForm] = useState<TransactionFormData>({
-    valor: "",
-    clienteId: "",
-    clienteNome: "",
-    fornecedor: "",
-    servico: "",
-    categoria: "",
-    data: new Date().toISOString().slice(0, 10),
-    status: isRevenue ? "pendente" : "aberta",
-    pagamento: "",
-    centroCusto: "",
-    recorrencia: "nao",
-    observacoes: "",
+    valor: initialData?.valor ?? "",
+    clienteId: initialData?.clienteId ?? "",
+    clienteNome: initialData?.clienteNome ?? "",
+    fornecedor: initialData?.fornecedor ?? "",
+    servico: initialData?.servico ?? "",
+    categoria: initialData?.categoria ?? "",
+    data: initialData?.data ?? new Date().toISOString().slice(0, 10),
+    dataFim: initialData?.dataFim,
+    numParcelas: initialData?.numParcelas,
+    status: initialData?.status ?? (isRevenue ? "pendente" : "aberta"),
+    pagamento: initialData?.pagamento ?? "",
+    centroCusto: initialData?.centroCusto ?? "",
+    recorrencia: initialData?.recorrencia ?? "nao",
+    ocorrencias: initialData?.ocorrencias,
+    observacoes: initialData?.observacoes ?? "",
   });
 
   const set = (field: keyof TransactionFormData) =>
@@ -779,8 +1248,20 @@ function TransactionFormModal({
   const save = async (e: FormEvent) => {
     e.preventDefault();
     setSaving(true);
-    await onSave(form);
-    setSaving(false);
+    let dataToSave = { ...form };
+    if (form.recorrencia !== "nao" && numParcelas > 0) {
+      const start = new Date(form.data + "T12:00:00");
+      const end = new Date(start);
+      end.setMonth(end.getMonth() + intervalMonths(form.recorrencia) * (numParcelas - 1));
+      dataToSave = { ...dataToSave, dataFim: end.toISOString().slice(0, 10), numParcelas };
+    } else {
+      dataToSave = { ...dataToSave, dataFim: undefined, numParcelas: undefined, ocorrencias: undefined };
+    }
+    try {
+      await onSave(dataToSave);
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -789,12 +1270,12 @@ function TransactionFormModal({
         <div className="panel-head">
           <div>
             <span className="eyebrow">{isRevenue ? "Entrada de caixa" : "Saída de caixa"}</span>
-            <strong>{isRevenue ? "Registrar receita" : "Registrar despesa"}</strong>
+            <strong>{isEditing ? "Editar lançamento" : isRevenue ? "Registrar receita" : "Registrar despesa"}</strong>
           </div>
           <button type="button" className="icon-button" onClick={onClose} aria-label="Fechar"><X size={17} /></button>
         </div>
         <div className="transaction-intro">
-          <h3>{isRevenue ? "Registrar receita" : "Registrar despesa"}</h3>
+          <h3>{isEditing ? "Editar lançamento" : isRevenue ? "Registrar receita" : "Registrar despesa"}</h3>
           <p>{isRevenue ? "Informe o cliente, valor e condição do recebimento." : "Informe o cliente, fornecedor, categoria, valor e vencimento do custo."}</p>
         </div>
         <div className="transaction-form-grid">
@@ -866,16 +1347,28 @@ function TransactionFormModal({
               <option value="anual">Anual</option>
             </select>
           </label>
+          {form.recorrencia !== "nao" && (
+            <label>
+              <span>Número de parcelas</span>
+              <input
+                type="number"
+                min={1}
+                max={120}
+                value={numParcelas}
+                onChange={(e) => setNumParcelas(Math.max(1, parseInt(e.target.value, 10) || 1))}
+              />
+            </label>
+          )}
           <label className="wide">
             <span>Observações</span>
             <textarea rows={4} placeholder="Contexto, nota fiscal, condição comercial..." value={form.observacoes} onChange={set("observacoes")} />
           </label>
         </div>
         <div className="modal-actions">
-          <button type="button" className="secondary-button" onClick={onBack}>Voltar</button>
-          <button type="button" className="secondary-button" onClick={onClose}>Cancelar</button>
+          <button type="button" className="secondary-button" onClick={onBack}>{isEditing ? "Cancelar" : "Voltar"}</button>
+          <button type="button" className="secondary-button" onClick={onClose}>Fechar</button>
           <button className="primary-button" type="submit" disabled={saving}>
-            {saving ? "Salvando..." : `Salvar ${isRevenue ? "receita" : "despesa"}`}
+            {saving ? "Salvando..." : isEditing ? "Atualizar" : `Salvar ${isRevenue ? "receita" : "despesa"}`}
           </button>
         </div>
       </form>
@@ -985,12 +1478,16 @@ function ProposalsPage({
 function ClientesPage({
   clients,
   onNewClient,
+  onUpdateClient,
   onDeleteClient,
 }: {
   clients: Client[];
   onNewClient: () => void;
+  onUpdateClient: (id: string, data: Partial<Client>) => Promise<void>;
   onDeleteClient: (id: string) => void;
 }) {
+  const [customizingClient, setCustomizingClient] = useState<Client | null>(null);
+
   return (
     <div className="page">
       <ModuleHeader
@@ -1011,17 +1508,33 @@ function ClientesPage({
         </Card>
       ) : (
         <section className="client-list">
-          {clients.map((client) => (
-            <Card key={client.id} className="client-card">
+          {clients.map((client) => {
+            const cardColor = client.cardColor || CLIENT_CARD_COLORS[0].value;
+            const iconOption = CLIENT_ICON_OPTIONS.find((item) => item.value === client.cardIcon) ?? CLIENT_ICON_OPTIONS[0];
+            return (
+            <Card
+              key={client.id}
+              className="client-card"
+              style={{
+                "--client-accent": cardColor,
+                "--client-soft": hexToRgba(cardColor, 0.15),
+                "--client-glow": hexToRgba(cardColor, 0.08),
+              } as React.CSSProperties}
+            >
               <div className="client-card-head">
-                <div className="client-avatar">{client.nome.slice(0, 2).toUpperCase()}</div>
+                <div className="client-avatar">{iconOption.icon ?? client.nome.slice(0, 2).toUpperCase()}</div>
                 <div>
                   <strong>{client.nome}</strong>
                   <span>{client.cnpj || "CNPJ não informado"}</span>
                 </div>
-                <button className="icon-button danger" style={{ marginLeft: "auto" }} onClick={() => onDeleteClient(client.id)} aria-label="Remover">
-                  <Trash2 size={15} />
-                </button>
+                <div className="client-card-actions">
+                  <button className="icon-button" onClick={() => setCustomizingClient(client)} aria-label="Personalizar cliente" title="Personalizar cliente">
+                    <Palette size={15} />
+                  </button>
+                  <button className="icon-button danger" onClick={() => onDeleteClient(client.id)} aria-label="Remover" title="Remover">
+                    <Trash2 size={15} />
+                  </button>
+                </div>
               </div>
               <div className="client-card-body">
                 {client.email && <p><span>E-mail</span>{client.email}</p>}
@@ -1030,9 +1543,111 @@ function ClientesPage({
                 {client.segmento && <p><span>Segmento</span>{client.segmento}</p>}
               </div>
             </Card>
-          ))}
+            );
+          })}
         </section>
       )}
+      {customizingClient && (
+        <ClientCustomizeModal
+          client={customizingClient}
+          onClose={() => setCustomizingClient(null)}
+          onSave={async (data) => {
+            await onUpdateClient(customizingClient.id, data);
+            setCustomizingClient(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ClientCustomizeModal({
+  client,
+  onClose,
+  onSave,
+}: {
+  client: Client;
+  onClose: () => void;
+  onSave: (data: Pick<Client, "cardColor" | "cardIcon">) => Promise<void>;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [cardColor, setCardColor] = useState(client.cardColor || CLIENT_CARD_COLORS[0].value);
+  const [cardIcon, setCardIcon] = useState(client.cardIcon || "initials");
+  const iconOption = CLIENT_ICON_OPTIONS.find((item) => item.value === cardIcon) ?? CLIENT_ICON_OPTIONS[0];
+
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    await onSave({ cardColor, cardIcon });
+    setSaving(false);
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <form className="transaction-modal client-customize-modal" onClick={(e) => e.stopPropagation()} onSubmit={save}>
+        <div className="panel-head">
+          <div>
+            <span className="eyebrow">Personalizar</span>
+            <strong>{client.nome}</strong>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Fechar"><X size={17} /></button>
+        </div>
+        <div
+          className="client-style-preview"
+          style={{
+            "--client-accent": cardColor,
+            "--client-soft": hexToRgba(cardColor, 0.15),
+            "--client-glow": hexToRgba(cardColor, 0.08),
+          } as React.CSSProperties}
+        >
+          <div className="client-avatar">{iconOption.icon ?? client.nome.slice(0, 2).toUpperCase()}</div>
+          <div>
+            <strong>{client.nome}</strong>
+            <span>{client.cnpj || "CNPJ nao informado"}</span>
+          </div>
+        </div>
+        <div className="client-style-stack">
+          <div className="client-style-field wide">
+            <span>Cor do card</span>
+            <div className="client-color-options">
+              {CLIENT_CARD_COLORS.map((color) => (
+                <button
+                  type="button"
+                  key={color.value}
+                  className={cardColor === color.value ? "active" : ""}
+                  style={{ "--swatch-color": color.value } as React.CSSProperties}
+                  onClick={() => setCardColor(color.value)}
+                  aria-label={color.label}
+                  title={color.label}
+                />
+              ))}
+            </div>
+          </div>
+          <div className="client-style-field wide">
+            <span>Icone do card</span>
+            <div className="client-icon-options">
+              {CLIENT_ICON_OPTIONS.map((option) => (
+                <button
+                  type="button"
+                  key={option.value}
+                  className={cardIcon === option.value ? "active" : ""}
+                  onClick={() => setCardIcon(option.value)}
+                  aria-label={option.label}
+                  title={option.label}
+                >
+                  {option.icon ?? "AB"}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="secondary-button" onClick={onClose}>Cancelar</button>
+          <button className="primary-button" type="submit" disabled={saving}>
+            {saving ? "Salvando..." : "Salvar estilo"}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -1048,6 +1663,8 @@ function ClientFormModal({
   const [form, setForm] = useState({
     nome: "", cnpj: "", email: "", telefone: "",
     responsavel: "", segmento: "", site: "", observacoes: "",
+    cardColor: CLIENT_CARD_COLORS[0].value,
+    cardIcon: "initials",
   });
 
   const set = (field: keyof typeof form) =>
@@ -1090,6 +1707,39 @@ function ClientFormModal({
               <option>Tecnologia</option><option>Varejo</option><option>Outro</option>
             </select>
           </label>
+          <div className="client-style-field">
+            <span>Cor do card</span>
+            <div className="client-color-options">
+              {CLIENT_CARD_COLORS.map((color) => (
+                <button
+                  type="button"
+                  key={color.value}
+                  className={form.cardColor === color.value ? "active" : ""}
+                  style={{ "--swatch-color": color.value } as React.CSSProperties}
+                  onClick={() => setForm((prev) => ({ ...prev, cardColor: color.value }))}
+                  aria-label={color.label}
+                  title={color.label}
+                />
+              ))}
+            </div>
+          </div>
+          <div className="client-style-field">
+            <span>Icone</span>
+            <div className="client-icon-options">
+              {CLIENT_ICON_OPTIONS.map((option) => (
+                <button
+                  type="button"
+                  key={option.value}
+                  className={form.cardIcon === option.value ? "active" : ""}
+                  onClick={() => setForm((prev) => ({ ...prev, cardIcon: option.value }))}
+                  aria-label={option.label}
+                  title={option.label}
+                >
+                  {option.icon ?? "AB"}
+                </button>
+              ))}
+            </div>
+          </div>
           <label className="wide"><span>Site</span><input type="url" placeholder="https://empresa.com.br" value={form.site} onChange={set("site")} /></label>
           <label className="wide">
             <span>Observações</span>
@@ -1604,7 +2254,7 @@ function RelatóriosPage({
   onOpenReport: () => void;
   onToast: (msg: string) => void;
 }) {
-  const receitas = transactions.filter((t) => t.kind === "receita").reduce((s, t) => s + parseValue(t.valor), 0);
+  const receitas = sumOccurrences(expandFinanceOccurrences(transactions), "receita");
 
   return (
     <div className="page proposals-page">
@@ -1902,8 +2552,8 @@ function InsightCard({ icon, title, text }: { icon: ReactNode; title: string; te
   );
 }
 
-function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <div className={`card ${className}`}>{children}</div>;
+function Card({ children, className = "", style }: { children: ReactNode; className?: string; style?: React.CSSProperties }) {
+  return <div className={`card ${className}`} style={style}>{children}</div>;
 }
 
 function CopilotPanel({ onClose, onAsk }: { onClose: () => void; onAsk: (msg: string) => void }) {

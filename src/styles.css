@@ -1583,6 +1583,19 @@ h3 {
   flex-direction: column;
   gap: 14px;
   padding: 20px;
+  border-color: color-mix(in srgb, var(--client-accent, var(--gold)) 24%, var(--line));
+  background:
+    linear-gradient(135deg, var(--client-glow, rgba(216, 183, 93, 0.08)), transparent 58%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.025)),
+    var(--surface);
+}
+
+.client-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: var(--client-accent, var(--gold));
 }
 
 .client-card-head {
@@ -1595,14 +1608,28 @@ h3 {
   width: 40px;
   height: 40px;
   border-radius: 10px;
-  background: rgba(216, 183, 93, 0.15);
-  color: var(--gold);
+  border: 1px solid color-mix(in srgb, var(--client-accent, var(--gold)) 30%, transparent);
+  background: var(--client-soft, rgba(216, 183, 93, 0.15));
+  color: var(--client-accent, var(--gold));
   font-size: 13px;
   font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+.client-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.client-card-actions .icon-button {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
 }
 
 .client-card-head strong {
@@ -1640,6 +1667,104 @@ h3 {
   font-size: 12px;
 }
 
+.client-style-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.client-style-field > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.client-style-field.wide {
+  width: 100%;
+}
+
+.client-color-options,
+.client-icon-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.client-color-options button,
+.client-icon-options button {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--muted);
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.client-color-options button {
+  background:
+    radial-gradient(circle at 50% 50%, var(--swatch-color) 0 44%, transparent 45%),
+    rgba(255, 255, 255, 0.045);
+}
+
+.client-color-options button:hover,
+.client-icon-options button:hover,
+.client-color-options button.active,
+.client-icon-options button.active {
+  border-color: var(--line-strong);
+  background-color: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+.client-color-options button.active,
+.client-icon-options button.active {
+  box-shadow: inset 0 0 0 1px var(--gold);
+}
+
+.client-customize-modal {
+  gap: 16px;
+}
+
+.client-style-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 1.25rem;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--client-accent, var(--gold)) 24%, var(--line));
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, var(--client-glow, rgba(216, 183, 93, 0.08)), transparent 64%),
+    rgba(255, 255, 255, 0.04);
+}
+
+.client-style-preview strong,
+.client-style-preview span {
+  display: block;
+}
+
+.client-style-preview span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-family: "SF Mono", "Fira Mono", monospace;
+  font-size: 12px;
+}
+
+.client-style-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 0 1.25rem;
+}
+
 /* ── Transaction list ─────────────────────────────────────────────── */
 .transaction-list { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1rem; }
 .transaction-row {
@@ -1659,6 +1784,22 @@ h3 {
 .transaction-value { font-size: 0.9rem; font-weight: 600; white-space: nowrap; }
 .transaction-value.receita { color: #4ade80; }
 .transaction-value.despesa { color: #f87171; }
+.finance-projection-card { margin-bottom: 1rem; }
+.projection-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 0.85rem;
+}
+.projection-summary span {
+  font-size: 0.78rem;
+  color: var(--muted);
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.035);
+  border-radius: 8px;
+  padding: 0.45rem 0.65rem;
+}
+.projection-summary strong { color: var(--text); }
 
 /* ── Status badges ────────────────────────────────────────────────── */
 .status-badge {
@@ -1671,6 +1812,30 @@ select.status-badge { cursor: pointer; appearance: none; }
 .status-badge.pendente, .status-badge.aberta, .status-badge.rascunho { background: rgba(251,191,36,0.12); color: #fbbf24; border-color: rgba(251,191,36,0.2); }
 .status-badge.atrasada { background: rgba(248,113,113,0.12); color: #f87171; border-color: rgba(248,113,113,0.2); }
 .status-badge.enviada { background: rgba(99,179,237,0.12); color: #63b3ed; border-color: rgba(99,179,237,0.2); }
+
+/* ── Row actions ──────────────────────────────────────────────────── */
+.row-actions { display: flex; align-items: center; gap: 0.15rem; flex-shrink: 0; }
+
+/* ── Recurrence tag ───────────────────────────────────────────────── */
+.recurrence-tag { font-style: normal; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 99px; background: rgba(139,92,246,0.15); color: #a78bfa; border: 1px solid rgba(139,92,246,0.25); }
+
+/* ── Occurrence counter ───────────────────────────────────────────── */
+.occurrence-counter { font-size: 0.75rem; white-space: nowrap; color: #a78bfa; background: rgba(139,92,246,0.1); border: 1px solid rgba(139,92,246,0.2); padding: 0.2rem 0.55rem; border-radius: 99px; }
+
+/* ── Occurrence sub-rows ──────────────────────────────────────────── */
+.occurrence-row {
+  display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.45rem 0.75rem 0.45rem 3.25rem;
+  border-radius: 6px; background: rgba(255,255,255,0.015);
+  border: 1px solid rgba(255,255,255,0.04); border-top: none;
+  margin-top: -0.25rem;
+}
+.occurrence-date { flex: 1; font-size: 0.78rem; opacity: 0.65; }
+.occurrence-row .transaction-value { min-width: 84px; text-align: right; }
+
+/* ── Success icon button ──────────────────────────────────────────── */
+.icon-button.success { color: rgba(74,222,128,0.5); }
+.icon-button.success:hover { color: #4ade80; background: rgba(74,222,128,0.1); }
 
 /* ── Danger icon button ───────────────────────────────────────────── */
 .icon-button.danger { color: rgba(248,113,113,0.5); }
