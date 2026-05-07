@@ -56,6 +56,9 @@ export type Proposal = {
   condicao: string;
   observacoes: string;
   status: "rascunho" | "enviada" | "aprovada";
+  generatedText?: string;
+  documentSections?: string;
+  docStyle?: string;
   createdAt?: unknown;
 };
 

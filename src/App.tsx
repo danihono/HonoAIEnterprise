@@ -11,9 +11,11 @@ import {
   CircleDollarSign,
   Command,
   CreditCard,
+  Download,
   FileText,
   Filter,
   FolderOpen,
+  ImageIcon,
   LayoutDashboard,
   Moon,
   PanelLeftClose,
@@ -44,6 +46,20 @@ import {
   subscribeTransactions,
   updateProposal,
 } from "./lib/db";
+import {
+  DocumentSection,
+  ProposalForm,
+  ReportContent,
+  ReportOptions,
+  SheetKey,
+  generateDocumentSections,
+  generateReportContent,
+  generateSectionContent,
+  refineDocumentSections,
+} from "./lib/claude";
+import { exportToExcel } from "./lib/excel";
+import { DocStyle, extractStyleFromFile, extractTextFromFile } from "./lib/extract";
+import { exportToDocx, printProposal } from "./lib/document";
 
 type PageId =
   | "dashboard"
@@ -98,6 +114,14 @@ export function App() {
   const [proposalOpen, setProposalOpen] = useState(false);
   const [clientModalOpen, setClientModalOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [proposalEditorData, setProposalEditorData] = useState<{
+    id?: string;
+    form: ProposalFormData;
+    sections: DocumentSection[];
+    docStyle: DocStyle;
+  } | null>(null);
+  const [proposalViewerId, setProposalViewerId] = useState<string | null>(null);
 
   const [clients, setClients] = useState<Client[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -166,6 +190,7 @@ export function App() {
             proposals={proposals}
             onCreate={openProposal}
             onToast={showToast}
+            onView={(id) => setProposalViewerId(id)}
             onDeleteProposal={async (id) => {
               await deleteProposal(id);
               showToast("Proposta removida.");
@@ -195,12 +220,12 @@ export function App() {
           />
         )}
         {activePage === "relatorios" && (
-          <EmptyModule
-            icon={<BarChart3 size={24} />}
-            title="Relatórios"
-            subtitle="Relatórios claros para decisão, reunião e acompanhamento de performance."
-            action="Gerar relatório"
-            onAction={() => showToast("Relatório preparado.")}
+          <RelatóriosPage
+            proposals={proposals}
+            transactions={transactions}
+            clients={clients}
+            onOpenReport={() => setReportModalOpen(true)}
+            onToast={showToast}
           />
         )}
         {activePage === "configuracoes" && <SettingsPage onToast={showToast} />}
@@ -220,13 +245,67 @@ export function App() {
         <ProposalModal
           clients={clients}
           onClose={() => setProposalOpen(false)}
-          onDone={async (data) => {
-            await addProposal({ ...data, status: "rascunho" });
+          onGenerated={({ form, sections, docStyle }) => {
             setProposalOpen(false);
-            showToast("Proposta criada em rascunho.");
+            setProposalEditorData({ form, sections, docStyle });
           }}
         />
       )}
+      {proposalEditorData && (
+        <ProposalEditor
+          data={proposalEditorData}
+          onClose={() => setProposalEditorData(null)}
+          onSave={async (sections, form, docStyle) => {
+            const documentSections = JSON.stringify(sections);
+            const docStyleJson = JSON.stringify(docStyle);
+            if (proposalEditorData.id) {
+              await updateProposal(proposalEditorData.id, { documentSections, docStyle: docStyleJson });
+              showToast("Proposta atualizada.");
+            } else {
+              await addProposal({ ...form, status: "rascunho", documentSections, docStyle: docStyleJson });
+              showToast("Proposta salva com sucesso.");
+            }
+            setProposalEditorData(null);
+          }}
+        />
+      )}
+      {proposalViewerId && (() => {
+        const viewed = proposals.find((p) => p.id === proposalViewerId);
+        if (!viewed) return null;
+        const viewedSections: DocumentSection[] = viewed.documentSections
+          ? JSON.parse(viewed.documentSections)
+          : viewed.generatedText
+          ? [{ id: "1", heading: "Proposta", content: viewed.generatedText }]
+          : [];
+        const viewedStyle: DocStyle = viewed.docStyle ? JSON.parse(viewed.docStyle) : {};
+        return (
+          <ProposalViewer
+            proposal={viewed}
+            sections={viewedSections}
+            docStyle={viewedStyle}
+            onClose={() => setProposalViewerId(null)}
+            onEdit={() => {
+              setProposalViewerId(null);
+              setProposalEditorData({
+                id: viewed.id,
+                form: {
+                  clienteNome: viewed.clienteNome,
+                  servicoPrincipal: viewed.servicoPrincipal,
+                  objetivo: viewed.objetivo,
+                  entregaveis: viewed.entregaveis,
+                  prazo: viewed.prazo,
+                  criterios: viewed.criterios,
+                  valorTotal: viewed.valorTotal,
+                  condicao: viewed.condicao,
+                  observacoes: viewed.observacoes,
+                },
+                sections: viewedSections,
+                docStyle: viewedStyle,
+              });
+            }}
+          />
+        );
+      })()}
       {clientModalOpen && (
         <ClientFormModal
           onClose={() => setClientModalOpen(false)}
@@ -235,6 +314,14 @@ export function App() {
             setClientModalOpen(false);
             showToast(`Cliente ${data.nome} cadastrado.`);
           }}
+        />
+      )}
+      {reportModalOpen && (
+        <ReportModal
+          proposals={proposals}
+          transactions={transactions}
+          onClose={() => setReportModalOpen(false)}
+          onToast={showToast}
         />
       )}
       <ToastHost toasts={toasts} />
@@ -803,12 +890,14 @@ function ProposalsPage({
   proposals,
   onCreate,
   onToast,
+  onView,
   onDeleteProposal,
   onUpdateStatus,
 }: {
   proposals: Proposal[];
   onCreate: () => void;
   onToast: (msg: string) => void;
+  onView: (id: string) => void;
   onDeleteProposal: (id: string) => void;
   onUpdateStatus: (id: string, status: Proposal["status"]) => void;
 }) {
@@ -877,6 +966,9 @@ function ProposalsPage({
                   <option value="enviada">enviada</option>
                   <option value="aprovada">aprovada</option>
                 </select>
+                <button className="secondary-button view-btn" onClick={() => onView(p.id)}>
+                  <FileText size={14} /> Ver
+                </button>
                 <button className="icon-button danger" onClick={() => onDeleteProposal(p.id)} aria-label="Remover">
                   <Trash2 size={15} />
                 </button>
@@ -1018,20 +1110,35 @@ function ClientFormModal({
 
 // ── Proposal Modal ────────────────────────────────────────────────────────────
 
-type ProposalFormData = Omit<Proposal, "id" | "status" | "createdAt">;
+type ProposalFormData = Omit<Proposal, "id" | "status" | "createdAt" | "generatedText" | "documentSections" | "docStyle">;
+
+const DEFAULT_DOC_STYLE: DocStyle = {
+  fontBody: "Georgia",
+  fontHeading: "Arial",
+  accentColor: "#111111",
+  textColor: "#111111",
+  bgColor: "#ffffff",
+};
+
+const FONT_OPTIONS = ["Georgia", "Times New Roman", "Arial", "Helvetica", "Inter", "Montserrat", "Lato", "Garamond"];
 
 function ProposalModal({
   clients,
   onClose,
-  onDone,
+  onGenerated,
 }: {
   clients: Client[];
   onClose: () => void;
-  onDone: (data: ProposalFormData) => Promise<void>;
+  onGenerated: (data: { form: ProposalFormData; sections: DocumentSection[]; docStyle: DocStyle }) => void;
 }) {
   const [step, setStep] = useState(0);
-  const [saving, setSaving] = useState(false);
-  const steps = ["Cliente", "Escopo", "Investimento", "Revisão"];
+  const [generating, setGenerating] = useState(false);
+  const [extracting, setExtracting] = useState(false);
+  const [error, setError] = useState("");
+  const [template, setTemplate] = useState("");
+  const [templateFileName, setTemplateFileName] = useState("");
+  const [detectedStyle, setDetectedStyle] = useState<DocStyle>({});
+  const steps = ["Cliente & Modelo", "Escopo", "Investimento", "Gerar"];
   const [form, setForm] = useState<ProposalFormData>({
     clienteNome: "", servicoPrincipal: "", objetivo: "",
     entregaveis: "", prazo: "", criterios: "",
@@ -1042,10 +1149,37 @@ function ProposalModal({
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
       setForm((prev) => ({ ...prev, [field]: e.target.value }));
 
-  const done = async () => {
-    setSaving(true);
-    await onDone(form);
-    setSaving(false);
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setExtracting(true);
+    setTemplateFileName(file.name);
+    try {
+      const [text, style] = await Promise.all([
+        extractTextFromFile(file),
+        extractStyleFromFile(file),
+      ]);
+      setTemplate(text);
+      setDetectedStyle(style);
+    } catch {
+      setError("Não foi possível ler o arquivo. Tente colar o texto manualmente.");
+    } finally {
+      setExtracting(false);
+    }
+  };
+
+  const generate = async () => {
+    setError("");
+    setGenerating(true);
+    try {
+      const sections = await generateDocumentSections(form as ProposalForm, template || undefined);
+      const docStyle = { ...DEFAULT_DOC_STYLE, ...detectedStyle };
+      onGenerated({ form, sections, docStyle });
+    } catch {
+      setError("Erro ao gerar proposta. Verifique a chave da API no arquivo .env e tente novamente.");
+    } finally {
+      setGenerating(false);
+    }
   };
 
   return (
@@ -1065,7 +1199,7 @@ function ProposalModal({
         <div className="proposal-body">
           {step === 0 && (
             <div className="form-step">
-              <h3>Quem vai receber a proposta?</h3>
+              <h3>Quem vai receber e qual o modelo?</h3>
               <div className="form-grid">
                 <label>
                   <span>Cliente</span>
@@ -1076,7 +1210,22 @@ function ProposalModal({
                 </label>
                 <label><span>Nome do cliente (manual)</span><input placeholder="Ou digite o nome..." value={form.clienteNome} onChange={set("clienteNome")} /></label>
                 <label><span>Serviço principal</span><input placeholder="Ex: Gestão de tráfego, consultoria..." value={form.servicoPrincipal} onChange={set("servicoPrincipal")} /></label>
-                <label className="wide"><span>Objetivo do projeto</span><textarea rows={4} value={form.objetivo} onChange={set("objetivo")} /></label>
+                <label className="wide"><span>Objetivo do projeto</span><textarea rows={3} value={form.objetivo} onChange={set("objetivo")} /></label>
+                <label className="wide template-upload-label">
+                  <span>Upload do modelo (.pdf ou .docx) <em style={{ opacity: 0.5, fontWeight: 400 }}>— o Claude copia a estrutura</em></span>
+                  <input type="file" accept=".pdf,.docx,.doc,.txt" onChange={handleFileUpload} className="file-input" disabled={extracting} />
+                  {extracting && <span style={{ fontSize: "0.8rem", opacity: 0.6 }}>Extraindo texto do arquivo...</span>}
+                  {templateFileName && !extracting && <span style={{ fontSize: "0.8rem", color: "#4ade80" }}>✓ {templateFileName} carregado</span>}
+                </label>
+                <label className="wide">
+                  <span>Ou cole o modelo aqui <em style={{ opacity: 0.5, fontWeight: 400 }}>(opcional)</em></span>
+                  <textarea
+                    rows={4}
+                    placeholder="Cole aqui uma proposta anterior para o Claude copiar o estilo..."
+                    value={template}
+                    onChange={(e) => setTemplate(e.target.value)}
+                  />
+                </label>
               </div>
             </div>
           )}
@@ -1103,13 +1252,15 @@ function ProposalModal({
           {step === 3 && (
             <div className="review-state">
               <Sparkles size={30} />
-              <h3>Pronto para gerar a versão executiva.</h3>
-              <p>A IA vai transformar o contexto em um rascunho elegante, objetivo e fácil de revisar.</p>
+              <h3>Tudo pronto para gerar.</h3>
+              <p>O Claude vai criar a proposta em seções editáveis, com preview e export para Word e PDF.</p>
               <div style={{ marginTop: "1rem", textAlign: "left", fontSize: "0.85rem", opacity: 0.7 }}>
                 <p><strong>Cliente:</strong> {form.clienteNome || "—"}</p>
                 <p><strong>Serviço:</strong> {form.servicoPrincipal || "—"}</p>
                 <p><strong>Valor:</strong> {form.valorTotal ? currency.format(parseValue(form.valorTotal)) : "—"}</p>
+                {template && <p><strong>Modelo:</strong> ✓ {templateFileName || "colado manualmente"}</p>}
               </div>
+              {error && <p className="form-error">{error}</p>}
             </div>
           )}
         </div>
@@ -1117,11 +1268,521 @@ function ProposalModal({
           <button className="secondary-button" onClick={onClose}>Cancelar</button>
           <button
             className="primary-button"
-            disabled={saving}
-            onClick={() => step === steps.length - 1 ? done() : setStep(step + 1)}
+            disabled={generating || extracting}
+            onClick={() => step === steps.length - 1 ? generate() : setStep(step + 1)}
           >
-            {step === steps.length - 1 ? (saving ? "Salvando..." : "Gerar rascunho") : "Continuar"}
-            <ArrowRight size={18} />
+            {step === steps.length - 1
+              ? (generating ? <><Sparkles size={16} className="spin" /> Gerando seções...</> : <><WandSparkles size={16} /> Gerar proposta</>)
+              : <><ArrowRight size={18} /> Continuar</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Document canvas helper ────────────────────────────────────────────────────
+
+function DocumentCanvas({
+  sections,
+  meta,
+  logo,
+  docStyle,
+}: {
+  sections: DocumentSection[];
+  meta: { clienteNome: string; servicoPrincipal: string; valorTotal: string };
+  logo?: string;
+  docStyle?: DocStyle;
+}) {
+  const ds = docStyle ?? {};
+  return (
+    <div
+      className="document-canvas"
+      style={{
+        fontFamily: ds.fontBody ? `"${ds.fontBody}", Georgia, serif` : undefined,
+        color: ds.textColor ?? undefined,
+        backgroundColor: ds.bgColor ?? undefined,
+        "--doc-accent": ds.accentColor ?? "#111111",
+      } as React.CSSProperties}
+    >
+      {logo && <img src={logo} alt="Logo" className="doc-logo" />}
+      <div className="doc-title">PROPOSTA COMERCIAL</div>
+      <div className="doc-meta-bar">
+        {[["Para", meta.clienteNome], ["Serviço", meta.servicoPrincipal], ["Valor", meta.valorTotal], ["Data", new Date().toLocaleDateString("pt-BR")]].map(
+          ([label, val]) => (
+            <div key={label} className="doc-meta-item">
+              <span className="doc-meta-label">{label}</span>
+              <span>{val || "—"}</span>
+            </div>
+          )
+        )}
+      </div>
+      <hr className="doc-divider" />
+      {sections.map((s) => (
+        <div key={s.id} className="doc-section">
+          <h2 className="doc-section-heading">{s.heading}</h2>
+          <div className="doc-section-content">
+            {s.content.split("\n").map((line, i) =>
+              line.trim() ? <p key={i}>{line}</p> : <br key={i} />
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Proposal Editor ───────────────────────────────────────────────────────────
+
+function ProposalEditor({
+  data,
+  onClose,
+  onSave,
+}: {
+  data: { id?: string; form: ProposalFormData; sections: DocumentSection[]; docStyle: DocStyle };
+  onClose: () => void;
+  onSave: (sections: DocumentSection[], form: ProposalFormData, docStyle: DocStyle) => Promise<void>;
+}) {
+  const [sections, setSections] = useState<DocumentSection[]>(data.sections);
+  const [docStyle, setDocStyle] = useState<DocStyle>(data.docStyle ?? DEFAULT_DOC_STYLE);
+  const [logo, setLogo] = useState<string | undefined>(() => localStorage.getItem("workspace_logo") ?? undefined);
+  const [saving, setSaving] = useState(false);
+  const [generatingSection, setGeneratingSection] = useState<string | null>(null);
+  const [refineInput, setRefineInput] = useState("");
+  const [refining, setRefining] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const base64 = ev.target?.result as string;
+      setLogo(base64);
+      localStorage.setItem("workspace_logo", base64);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const updateSection = (id: string, field: "heading" | "content", value: string) =>
+    setSections((prev) => prev.map((s) => (s.id === id ? { ...s, [field]: value } : s)));
+
+  const generateSection = async (section: DocumentSection) => {
+    setGeneratingSection(section.id);
+    try {
+      const content = await generateSectionContent(section.heading, data.form as ProposalForm);
+      updateSection(section.id, "content", content);
+    } finally {
+      setGeneratingSection(null);
+    }
+  };
+
+  const addSection = () =>
+    setSections((prev) => [...prev, { id: Date.now().toString(), heading: "Nova seção", content: "" }]);
+
+  const removeSection = (id: string) => setSections((prev) => prev.filter((s) => s.id !== id));
+
+  const handleRefine = async () => {
+    if (!refineInput.trim()) return;
+    setRefining(true);
+    try {
+      const updated = await refineDocumentSections(sections, refineInput);
+      setSections(updated);
+      setRefineInput("");
+    } finally {
+      setRefining(false);
+    }
+  };
+
+  const handleExportDocx = async () => {
+    setExporting(true);
+    try {
+      await exportToDocx(sections, data.form, logo, docStyle);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleExportPdf = () => printProposal(sections, data.form, logo, docStyle);
+
+  return (
+    <div className="modal-backdrop editor-backdrop">
+      <div className="proposal-editor-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="editor-topbar">
+          <div className="editor-logo-area">
+            <label className="logo-upload-btn" title="Clique para trocar o logo">
+              {logo
+                ? <img src={logo} alt="Logo" className="editor-logo-img" />
+                : <span className="logo-placeholder"><ImageIcon size={16} /> Logo</span>}
+              <input type="file" accept="image/*" onChange={handleLogoUpload} hidden />
+            </label>
+            <div>
+              <span className="eyebrow">Editor</span>
+              <strong>{data.form.clienteNome || "Nova proposta"} — {data.form.servicoPrincipal}</strong>
+            </div>
+          </div>
+          <div className="editor-actions">
+            <button className="secondary-button" onClick={handleExportPdf} title="Imprimir / Salvar como PDF">
+              <FileText size={14} /> PDF
+            </button>
+            <button className="secondary-button" onClick={handleExportDocx} disabled={exporting} title="Baixar Word (.docx)">
+              <Download size={14} /> {exporting ? "..." : "Word"}
+            </button>
+            <button className="secondary-button" onClick={onClose}>Descartar</button>
+            <button className="primary-button" disabled={saving} onClick={async () => {
+              setSaving(true);
+              await onSave(sections, data.form, docStyle);
+              setSaving(false);
+            }}>
+              {saving ? "Salvando..." : "Salvar"}
+            </button>
+          </div>
+        </div>
+
+        <div className="editor-split">
+          <div className="sections-panel">
+            <div className="pane-label">Tema visual</div>
+            <div className="theme-panel">
+              <label className="theme-row">
+                <span>Fonte corpo</span>
+                <select value={docStyle.fontBody ?? ""} onChange={(e) => setDocStyle((p) => ({ ...p, fontBody: e.target.value }))}>
+                  {FONT_OPTIONS.map((f) => <option key={f} value={f}>{f}</option>)}
+                </select>
+              </label>
+              <label className="theme-row">
+                <span>Fonte heading</span>
+                <select value={docStyle.fontHeading ?? ""} onChange={(e) => setDocStyle((p) => ({ ...p, fontHeading: e.target.value }))}>
+                  {FONT_OPTIONS.map((f) => <option key={f} value={f}>{f}</option>)}
+                </select>
+              </label>
+              <label className="theme-row">
+                <span>Cor destaque</span>
+                <input type="color" value={docStyle.accentColor ?? "#111111"} onChange={(e) => setDocStyle((p) => ({ ...p, accentColor: e.target.value }))} />
+              </label>
+              <label className="theme-row">
+                <span>Cor texto</span>
+                <input type="color" value={docStyle.textColor ?? "#111111"} onChange={(e) => setDocStyle((p) => ({ ...p, textColor: e.target.value }))} />
+              </label>
+              <label className="theme-row">
+                <span>Cor fundo</span>
+                <input type="color" value={docStyle.bgColor ?? "#ffffff"} onChange={(e) => setDocStyle((p) => ({ ...p, bgColor: e.target.value }))} />
+              </label>
+            </div>
+            <div className="pane-label" style={{ marginTop: "1rem" }}>Seções</div>
+            <div className="sections-list">
+              {sections.map((section) => (
+                <div key={section.id} className="section-block">
+                  <div className="section-block-head">
+                    <input
+                      className="section-heading-input"
+                      value={section.heading}
+                      onChange={(e) => updateSection(section.id, "heading", e.target.value)}
+                      placeholder="Título da seção"
+                    />
+                    <button
+                      className="icon-button"
+                      onClick={() => generateSection(section)}
+                      disabled={!!generatingSection}
+                      title="Gerar com IA"
+                    >
+                      {generatingSection === section.id
+                        ? <Sparkles size={13} className="spin" />
+                        : <WandSparkles size={13} />}
+                    </button>
+                    <button className="icon-button danger" onClick={() => removeSection(section.id)} title="Remover seção">
+                      <X size={13} />
+                    </button>
+                  </div>
+                  <textarea
+                    className="section-textarea"
+                    rows={6}
+                    value={section.content}
+                    onChange={(e) => updateSection(section.id, "content", e.target.value)}
+                    placeholder="Conteúdo desta seção..."
+                  />
+                </div>
+              ))}
+              <button className="secondary-button add-section-btn" onClick={addSection}>
+                <Plus size={13} /> Adicionar seção
+              </button>
+            </div>
+          </div>
+
+          <div className="document-canvas-wrap">
+            <div className="pane-label">Preview do documento</div>
+            <div className="document-canvas-scroll">
+              <DocumentCanvas sections={sections} meta={data.form} logo={logo} docStyle={docStyle} />
+            </div>
+          </div>
+        </div>
+
+        <div className="refine-bar">
+          <Sparkles size={16} className="refine-icon" />
+          <input
+            className="refine-input"
+            placeholder='Ajuste com IA... ex: "deixa mais formal", "adicione seção de garantias", "encurta a apresentação"'
+            value={refineInput}
+            onChange={(e) => setRefineInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleRefine()}
+            disabled={refining}
+          />
+          <button className="primary-button refine-btn" onClick={handleRefine} disabled={refining || !refineInput.trim()}>
+            {refining ? <><Sparkles size={14} className="spin" /> Ajustando...</> : "Ajustar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Proposal Viewer ────────────────────────────────────────────────────────────
+
+function ProposalViewer({
+  proposal,
+  sections,
+  docStyle,
+  onClose,
+  onEdit,
+}: {
+  proposal: Proposal;
+  sections: DocumentSection[];
+  docStyle: DocStyle;
+  onClose: () => void;
+  onEdit: () => void;
+}) {
+  const logo = localStorage.getItem("workspace_logo") ?? undefined;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="proposal-viewer-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="panel-head">
+          <div>
+            <span className="eyebrow">Proposta</span>
+            <strong>{proposal.clienteNome} — {proposal.servicoPrincipal}</strong>
+          </div>
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+            <button className="secondary-button" onClick={() => printProposal(sections, proposal, logo, docStyle)}>
+              <FileText size={14} /> PDF
+            </button>
+            <button className="secondary-button" onClick={() => exportToDocx(sections, proposal, logo, docStyle)}>
+              <Download size={14} /> Word
+            </button>
+            <button className="secondary-button" onClick={onEdit}><WandSparkles size={14} /> Editar com IA</button>
+            <button className="icon-button" onClick={onClose} aria-label="Fechar"><X size={17} /></button>
+          </div>
+        </div>
+        <div className="viewer-body">
+          {sections.length > 0 ? (
+            <DocumentCanvas sections={sections} meta={proposal} logo={logo} docStyle={docStyle} />
+          ) : (
+            <div className="viewer-summary">
+              <p><strong>Objetivo:</strong> {proposal.objetivo || "—"}</p>
+              <p><strong>Entregáveis:</strong> {proposal.entregaveis || "—"}</p>
+              <p><strong>Valor:</strong> {proposal.valorTotal || "—"}</p>
+              <p style={{ marginTop: "1.5rem", opacity: 0.6, fontSize: "0.85rem" }}>
+                Clique em "Editar com IA" para gerar o documento completo.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Relatórios ────────────────────────────────────────────────────────────────
+
+function RelatóriosPage({
+  proposals,
+  transactions,
+  clients,
+  onOpenReport,
+  onToast,
+}: {
+  proposals: Proposal[];
+  transactions: Transaction[];
+  clients: Client[];
+  onOpenReport: () => void;
+  onToast: (msg: string) => void;
+}) {
+  const receitas = transactions.filter((t) => t.kind === "receita").reduce((s, t) => s + parseValue(t.valor), 0);
+
+  return (
+    <div className="page proposals-page">
+      <ModuleHeader
+        eyebrow="Relatórios"
+        title="Relatórios executivos personalizados."
+        subtitle="O Claude analisa suas propostas e gera planilhas Excel com projeções, estratégia e riscos."
+        action="Gerar relatório Excel"
+        onAction={onOpenReport}
+      />
+      <section className="proposal-grid">
+        {[
+          ["Propostas ativas", String(proposals.length), proposals.length === 0 ? "Nenhuma ainda" : `${proposals.length} no pipeline`],
+          ["Receita registrada", currency.format(receitas), "Entradas no workspace"],
+          ["Clientes ativos", String(clients.length), clients.length === 0 ? "Nenhum ainda" : `${clients.length} cadastrados`],
+        ].map(([label, value, note]) => (
+          <Card className="kpi-card" key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+            <p>{note}</p>
+          </Card>
+        ))}
+      </section>
+
+      {proposals.length === 0 ? (
+        <Card className="empty-composer">
+          <BarChart3 size={26} />
+          <h3>Crie uma proposta para gerar relatórios.</h3>
+          <p>Os relatórios são personalizados por proposta — com projeções, milestones e análise de risco gerados pelo Claude.</p>
+          <button className="primary-button" onClick={onOpenReport}>
+            <Plus size={18} /> Gerar relatório geral
+          </button>
+        </Card>
+      ) : (
+        <Card className="chart-card">
+          <div className="card-heading">
+            <div><h3>Propostas disponíveis</h3><p>Selecione uma para gerar o relatório Excel personalizado.</p></div>
+            <button className="primary-button" onClick={onOpenReport}><Plus size={16} /> Novo relatório</button>
+          </div>
+          <div className="transaction-list">
+            {proposals.map((p) => (
+              <div key={p.id} className="transaction-row">
+                <div className="transaction-badge receita"><BriefcaseBusiness size={16} /></div>
+                <div className="transaction-info">
+                  <strong>{p.clienteNome || "—"}</strong>
+                  <span>{p.servicoPrincipal || "—"}</span>
+                </div>
+                <div className="transaction-value receita">{p.valorTotal ? currency.format(parseValue(p.valorTotal)) : "—"}</div>
+                <span className={`status-badge ${p.status}`}>{p.status}</span>
+                <button className="secondary-button view-btn" onClick={onOpenReport}>
+                  <Download size={14} /> Gerar Excel
+                </button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <section className="soft-grid finance-priority-grid">
+        <InsightCard icon={<BarChart3 size={20} />} title="Projeção financeira" text="12 meses de receita, despesa e fluxo acumulado com base no valor e prazo da proposta." />
+        <InsightCard icon={<CalendarDays size={20} />} title="Planejamento & Marcos" text="Fases do projeto com datas de início e fim, responsáveis e status gerados pela IA." />
+        <InsightCard icon={<Activity size={20} />} title="Análise de risco" text="Riscos identificados pelo Claude com probabilidade, impacto e estratégia de mitigação." />
+      </section>
+    </div>
+  );
+}
+
+// ── Report Modal ──────────────────────────────────────────────────────────────
+
+const SHEET_DEFS: Array<{ key: SheetKey; label: string; desc: string; icon: React.ReactNode }> = [
+  { key: "resumo",     label: "Resumo Executivo",      desc: "KPIs, cliente e indicadores financeiros dos dados reais",    icon: <BarChart3 size={15} /> },
+  { key: "financeiro", label: "Projeção Financeira",   desc: "12 meses de receita, despesa e acumulado — gerado pelo Claude", icon: <CircleDollarSign size={15} /> },
+  { key: "milestones", label: "Planejamento & Marcos", desc: "Fases do projeto com datas e responsáveis — gerado pelo Claude", icon: <CalendarDays size={15} /> },
+  { key: "estrategia", label: "Estratégia",            desc: "Recomendações estratégicas priorizadas — gerado pelo Claude",   icon: <Sparkles size={15} /> },
+  { key: "fluxo",      label: "Fluxo de Caixa",        desc: "Transações reais do cliente registradas no sistema",           icon: <Activity size={15} /> },
+  { key: "riscos",     label: "Análise de Risco",       desc: "Riscos com probabilidade, impacto e mitigação — Claude",       icon: <BriefcaseBusiness size={15} /> },
+];
+
+function ReportModal({
+  proposals,
+  transactions,
+  onClose,
+  onToast,
+}: {
+  proposals: Proposal[];
+  transactions: Transaction[];
+  onClose: () => void;
+  onToast: (msg: string) => void;
+}) {
+  const [selectedProposalId, setSelectedProposalId] = useState<string>("geral");
+  const [selectedSheets, setSelectedSheets] = useState<SheetKey[]>(["resumo", "financeiro", "milestones", "estrategia", "fluxo", "riscos"]);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState("");
+
+  const toggleSheet = (key: SheetKey) =>
+    setSelectedSheets((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
+    );
+
+  const handleGenerate = async () => {
+    if (selectedSheets.length === 0) { setError("Selecione ao menos uma aba."); return; }
+    setError("");
+    setGenerating(true);
+    try {
+      const proposal = selectedProposalId === "geral"
+        ? null
+        : proposals.find((p) => p.id === selectedProposalId) ?? null;
+
+      const options: ReportOptions = { sheets: selectedSheets, proposalId: selectedProposalId };
+
+      const aiSheets: SheetKey[] = ["financeiro", "milestones", "estrategia", "riscos"];
+      const needsAI = selectedSheets.some((s) => aiSheets.includes(s));
+      const reportContent: ReportContent = needsAI
+        ? await generateReportContent(proposal, transactions, options)
+        : {};
+
+      await exportToExcel(proposal, transactions, reportContent, options);
+      onToast("Relatório Excel gerado com sucesso.");
+      onClose();
+    } catch {
+      setError("Erro ao gerar relatório. Verifique a chave da API e tente novamente.");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="report-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="panel-head">
+          <div>
+            <span className="eyebrow">Relatório Excel</span>
+            <strong>Configurar e gerar planilha</strong>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="Fechar"><X size={17} /></button>
+        </div>
+        <div className="report-modal-body">
+          <div className="report-proposal-select">
+            <span>Proposta de referência</span>
+            <select value={selectedProposalId} onChange={(e) => setSelectedProposalId(e.target.value)}>
+              <option value="geral">Visão geral — todas as propostas e transações</option>
+              {proposals.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.clienteNome} — {p.servicoPrincipal}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="report-sheet-checkboxes">
+            <span>Abas do relatório</span>
+            {SHEET_DEFS.map((def) => (
+              <label
+                key={def.key}
+                className={`sheet-checkbox-item ${selectedSheets.includes(def.key) ? "checked" : ""}`}
+              >
+                <span className="sheet-icon">{def.icon}</span>
+                <div className="sheet-checkbox-copy">
+                  <strong>{def.label}</strong>
+                  <small>{def.desc}</small>
+                </div>
+                <input
+                  type="checkbox"
+                  className="sheet-toggle"
+                  checked={selectedSheets.includes(def.key)}
+                  onChange={() => toggleSheet(def.key)}
+                />
+              </label>
+            ))}
+          </div>
+          {error && <p className="form-error">{error}</p>}
+        </div>
+        <div className="modal-actions">
+          <button className="secondary-button" onClick={onClose}>Cancelar</button>
+          <button className="primary-button" onClick={handleGenerate} disabled={generating}>
+            {generating
+              ? <><Sparkles size={15} className="spin" /> Gerando...</>
+              : <><Download size={15} /> Gerar Excel</>}
           </button>
         </div>
       </div>
