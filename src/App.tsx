@@ -15,24 +15,21 @@ import {
   Filter,
   FolderOpen,
   LayoutDashboard,
-  MessageSquareText,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
   Search,
-  Send,
   Settings,
   Sparkles,
   Users,
   WandSparkles,
   X,
 } from "lucide-react";
-import { FormEvent, ReactNode, useMemo, useState } from "react";
+import React, { FormEvent, ReactNode, useMemo, useState } from "react";
 
 type PageId =
   | "dashboard"
-  | "ai"
   | "financeiro"
   | "clientes"
   | "propostas"
@@ -55,7 +52,6 @@ type NavItem = {
 
 const navItems: NavItem[] = [
   { id: "dashboard", label: "Dashboard", icon: <LayoutDashboard size={18} />, helper: "Visão financeira" },
-  { id: "ai", label: "Hono IA", icon: <Bot size={18} />, helper: "Copiloto central" },
   { id: "financeiro", label: "Financeiro", icon: <CircleDollarSign size={18} />, helper: "Receitas e custos" },
   { id: "clientes", label: "Clientes", icon: <Users size={18} />, helper: "Relacionamentos" },
   { id: "propostas", label: "Propostas", icon: <BriefcaseBusiness size={18} />, helper: "Pipeline comercial" },
@@ -128,9 +124,17 @@ const expenseMix = [
 
 type TransactionKind = "receita" | "despesa";
 
-const registeredClients = [
-  "Nenhum cliente cadastrado",
-];
+type Client = {
+  id: number;
+  nome: string;
+  cnpj: string;
+  email: string;
+  telefone: string;
+  responsavel: string;
+  segmento: string;
+  site: string;
+  observacoes: string;
+};
 
 export function App() {
   const [activePage, setActivePage] = useState<PageId>("dashboard");
@@ -138,6 +142,8 @@ export function App() {
   const [commandOpen, setCommandOpen] = useState(false);
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [proposalOpen, setProposalOpen] = useState(false);
+  const [clientModalOpen, setClientModalOpen] = useState(false);
+  const [clients, setClients] = useState<Client[]>([]);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const showToast = (message: string) => {
@@ -169,20 +175,20 @@ export function App() {
       <main className="workspace">
         {activePage === "dashboard" && (
           <DashboardPage
-            onOpenAI={() => setActivePage("ai")}
             onCreateProposal={openProposal}
             onToast={showToast}
           />
         )}
-        {activePage === "ai" && <AIPage onToast={showToast} />}
-        {activePage === "financeiro" && <FinancePage onToast={showToast} />}
+        {activePage === "financeiro" && (
+          <FinancePage
+            onToast={showToast}
+            clients={clients}
+          />
+        )}
         {activePage === "clientes" && (
-          <EmptyModule
-            icon={<Users size={24} />}
-            title="Clientes"
-            subtitle="Organize sua carteira com contexto comercial e sinais de relacionamento."
-            action="Cadastrar cliente"
-            onAction={() => showToast("Cadastro de cliente preparado.")}
+          <ClientesPage
+            clients={clients}
+            onNewClient={() => setClientModalOpen(true)}
           />
         )}
         {activePage === "propostas" && (
@@ -223,7 +229,6 @@ export function App() {
         <CopilotPanel
           onClose={() => setCopilotOpen(false)}
           onAsk={(message) => {
-            setActivePage("ai");
             showToast(message);
           }}
         />
@@ -245,6 +250,16 @@ export function App() {
           }}
         />
       )}
+      {clientModalOpen && (
+        <ClientFormModal
+          onClose={() => setClientModalOpen(false)}
+          onSave={(data) => {
+            setClients((prev) => [...prev, { ...data, id: Date.now() }]);
+            setClientModalOpen(false);
+            showToast(`Cliente ${data.nome} cadastrado.`);
+          }}
+        />
+      )}
       <ToastHost toasts={toasts} />
     </div>
   );
@@ -262,7 +277,7 @@ function Sidebar({
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand-mark">H</div>
+        <img src="/logo.png" alt="Hono AI" className="brand-logo" />
         {sidebarOpen && (
           <div className="brand-copy">
             <strong>Hono AI</strong>
@@ -348,7 +363,6 @@ function Topbar({
 function DashboardPage({
   onToast,
 }: {
-  onOpenAI: () => void;
   onCreateProposal: () => void;
   onToast: (message: string) => void;
 }) {
@@ -469,83 +483,7 @@ function DashboardPage({
   );
 }
 
-function AIPage({ onToast }: { onToast: (message: string) => void }) {
-  const [messages, setMessages] = useState([
-    {
-      role: "ai",
-      text: "Oi, Daniel. Estou pronto para ajudar a organizar dados, criar propostas e transformar sinais do negócio em decisões claras.",
-    },
-  ]);
-  const [input, setInput] = useState("");
-
-  const submit = (event?: FormEvent) => {
-    event?.preventDefault();
-    if (!input.trim()) return;
-    setMessages((items) => [
-      ...items,
-      { role: "user", text: input },
-      {
-        role: "ai",
-        text: "Perfeito. Como ainda estamos sem dados importados, eu começaria conectando uma fonte financeira ou criando uma proposta de teste para calibrar o workspace.",
-      },
-    ]);
-    setInput("");
-    onToast("Resposta gerada pela IA.");
-  };
-
-  return (
-    <div className="page ai-page">
-      <div className="ai-hero">
-        <span className="assistant-mark">
-          <Sparkles size={22} />
-        </span>
-        <div>
-          <span className="eyebrow">Hono IA</span>
-          <h1>Um parceiro calmo para decisões complexas.</h1>
-          <p>Converse, peça análises, gere propostas e traduza dados em ações executáveis.</p>
-        </div>
-      </div>
-      <div className="chat-layout">
-        <Card className="chat-card">
-          <div className="message-list">
-            {messages.map((message, index) => (
-              <div className={`message ${message.role}`} key={`${message.role}-${index}`}>
-                <span>{message.role === "ai" ? <Bot size={16} /> : "DA"}</span>
-                <p>{message.text}</p>
-              </div>
-            ))}
-          </div>
-          <form className="composer" onSubmit={submit}>
-            <MessageSquareText size={18} />
-            <input
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              placeholder="Peça uma análise, uma proposta ou um plano de ativação..."
-            />
-            <button type="submit" aria-label="Enviar">
-              <Send size={17} />
-            </button>
-          </form>
-        </Card>
-        <Card className="prompt-card">
-          <h3>Sugestões inteligentes</h3>
-          {[
-            "Como começo a importar meus dados?",
-            "Crie uma proposta premium de exemplo",
-            "Monte um plano de operação para esta semana",
-          ].map((prompt) => (
-            <button key={prompt} onClick={() => setInput(prompt)}>
-              <Sparkles size={16} />
-              {prompt}
-            </button>
-          ))}
-        </Card>
-      </div>
-    </div>
-  );
-}
-
-function FinancePage({ onToast }: { onToast: (message: string) => void }) {
+function FinancePage({ onToast, clients }: { onToast: (message: string) => void; clients: Client[] }) {
   const [transactionKind, setTransactionKind] = useState<TransactionKind | null>(null);
   const [transactionChooserOpen, setTransactionChooserOpen] = useState(false);
 
@@ -598,6 +536,7 @@ function FinancePage({ onToast }: { onToast: (message: string) => void }) {
       {transactionKind && (
         <TransactionFormModal
           kind={transactionKind}
+          clients={clients}
           onBack={() => {
             setTransactionKind(null);
             setTransactionChooserOpen(true);
@@ -651,11 +590,13 @@ function TransactionTypeModal({
 
 function TransactionFormModal({
   kind,
+  clients,
   onBack,
   onClose,
   onSave,
 }: {
   kind: TransactionKind;
+  clients: Client[];
   onBack: () => void;
   onClose: () => void;
   onSave: () => void;
@@ -697,11 +638,11 @@ function TransactionFormModal({
             <label>
               <span>Cliente</span>
               <select required defaultValue="">
-                <option value="" disabled>Selecione um cliente cadastrado</option>
-                {registeredClients.map((client) => (
-                  <option key={client} value={client} disabled={client.startsWith("Nenhum")}>
-                    {client}
-                  </option>
+                <option value="" disabled>
+                  {clients.length === 0 ? "Nenhum cliente cadastrado" : "Selecione um cliente"}
+                </option>
+                {clients.map((client) => (
+                  <option key={client.id} value={client.id}>{client.nome}</option>
                 ))}
               </select>
             </label>
@@ -1210,6 +1151,155 @@ function FormStep({ title, fields }: { title: string; fields: string[] }) {
           </label>
         ))}
       </div>
+    </div>
+  );
+}
+
+function ClientesPage({
+  clients,
+  onNewClient,
+}: {
+  clients: Client[];
+  onNewClient: () => void;
+}) {
+  return (
+    <div className="page">
+      <ModuleHeader
+        eyebrow="Clientes"
+        title="Carteira de clientes com clareza operacional."
+        subtitle="Organize contatos, CNPJ e contexto comercial de cada relacionamento."
+        action="Novo cliente"
+        onAction={onNewClient}
+      />
+      {clients.length === 0 ? (
+        <Card className="empty-composer large">
+          <Users size={24} />
+          <h3>Nenhum cliente cadastrado ainda.</h3>
+          <p>Cadastre o primeiro cliente para começar a vincular receitas, propostas e histórico.</p>
+          <button className="primary-button" onClick={onNewClient}>
+            <Plus size={18} />
+            Cadastrar cliente
+          </button>
+        </Card>
+      ) : (
+        <section className="client-list">
+          {clients.map((client) => (
+            <Card key={client.id} className="client-card">
+              <div className="client-card-head">
+                <div className="client-avatar">{client.nome.slice(0, 2).toUpperCase()}</div>
+                <div>
+                  <strong>{client.nome}</strong>
+                  <span>{client.cnpj || "CNPJ não informado"}</span>
+                </div>
+              </div>
+              <div className="client-card-body">
+                {client.email && <p><span>E-mail</span>{client.email}</p>}
+                {client.telefone && <p><span>Telefone</span>{client.telefone}</p>}
+                {client.responsavel && <p><span>Responsável</span>{client.responsavel}</p>}
+                {client.segmento && <p><span>Segmento</span>{client.segmento}</p>}
+              </div>
+            </Card>
+          ))}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function ClientFormModal({
+  onClose,
+  onSave,
+}: {
+  onClose: () => void;
+  onSave: (data: Omit<Client, "id">) => void;
+}) {
+  const [form, setForm] = useState({
+    nome: "",
+    cnpj: "",
+    email: "",
+    telefone: "",
+    responsavel: "",
+    segmento: "",
+    site: "",
+    observacoes: "",
+  });
+
+  const set = (field: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
+    setForm((prev) => ({ ...prev, [field]: e.target.value }));
+
+  const save = (e: FormEvent) => {
+    e.preventDefault();
+    onSave(form);
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <form className="transaction-modal" onClick={(e) => e.stopPropagation()} onSubmit={save}>
+        <div className="panel-head">
+          <div>
+            <span className="eyebrow">Cadastro</span>
+            <strong>Novo cliente</strong>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Fechar">
+            <X size={17} />
+          </button>
+        </div>
+        <div className="transaction-intro">
+          <h3>Cadastrar cliente</h3>
+          <p>Preencha os dados do cliente para vinculá-lo a receitas, propostas e histórico.</p>
+        </div>
+        <div className="transaction-form-grid">
+          <label>
+            <span>Nome / Razão social *</span>
+            <input required placeholder="Ex: Acme Ltda." value={form.nome} onChange={set("nome")} />
+          </label>
+          <label>
+            <span>CNPJ</span>
+            <input placeholder="00.000.000/0001-00" value={form.cnpj} onChange={set("cnpj")} />
+          </label>
+          <label>
+            <span>E-mail</span>
+            <input type="email" placeholder="contato@empresa.com" value={form.email} onChange={set("email")} />
+          </label>
+          <label>
+            <span>Telefone</span>
+            <input placeholder="(11) 99999-0000" value={form.telefone} onChange={set("telefone")} />
+          </label>
+          <label>
+            <span>Responsável / Contato</span>
+            <input placeholder="Nome do ponto focal" value={form.responsavel} onChange={set("responsavel")} />
+          </label>
+          <label>
+            <span>Segmento</span>
+            <select value={form.segmento} onChange={set("segmento")}>
+              <option value="">Selecione</option>
+              <option>Agência</option>
+              <option>Consultoria</option>
+              <option>E-commerce</option>
+              <option>Educação</option>
+              <option>Indústria</option>
+              <option>Saúde</option>
+              <option>Tecnologia</option>
+              <option>Varejo</option>
+              <option>Outro</option>
+            </select>
+          </label>
+          <label className="wide">
+            <span>Site</span>
+            <input type="url" placeholder="https://empresa.com.br" value={form.site} onChange={set("site")} />
+          </label>
+          <label className="wide">
+            <span>Observações</span>
+            <textarea rows={4} placeholder="Contexto do relacionamento, origem, notas..." value={form.observacoes} onChange={set("observacoes")} />
+          </label>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="secondary-button" onClick={onClose}>Cancelar</button>
+          <button className="primary-button" type="submit">
+            Cadastrar cliente
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

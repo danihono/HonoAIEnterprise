@@ -112,6 +112,14 @@ textarea {
   box-shadow: 0 12px 36px rgba(216, 183, 93, 0.2);
 }
 
+.brand-logo {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  object-fit: contain;
+  border-radius: var(--radius);
+}
+
 .brand-copy {
   display: flex;
   flex-direction: column;
@@ -1561,4 +1569,73 @@ h3 {
   .transaction-form-grid label.wide {
     grid-column: auto;
   }
+}
+
+/* ── Clientes ─────────────────────────────────────────────────── */
+.client-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.client-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px;
+}
+
+.client-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.client-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: rgba(216, 183, 93, 0.15);
+  color: var(--gold);
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.client-card-head strong {
+  display: block;
+  font-size: 14px;
+  color: var(--fg-1);
+  line-height: 1.3;
+}
+
+.client-card-head span {
+  font-size: 12px;
+  color: var(--fg-4);
+  font-family: "SF Mono", "Fira Mono", monospace;
+}
+
+.client-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.client-card-body p {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--fg-2);
+  margin: 0;
+}
+
+.client-card-body p span {
+  color: var(--fg-4);
+  min-width: 80px;
+  font-size: 12px;
 }
