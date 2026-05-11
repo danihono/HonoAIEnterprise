@@ -1,4 +1,5 @@
 import type { DocumentSection } from "./claude";
+import type { ProposalLineItem, ProposalTemplatePreferences } from "./db";
 import type { DocStyle } from "./extract";
 
 type DocMeta = { clienteNome: string; servicoPrincipal: string; valorTotal: string };
@@ -7,28 +8,37 @@ export async function exportToDocx(
   sections: DocumentSection[],
   meta: DocMeta,
   logo?: string,
-  style?: DocStyle
+  style?: DocStyle,
+  lineItems: ProposalLineItem[] = [],
+  template?: ProposalTemplatePreferences
 ) {
   const { Document, Paragraph, TextRun, HeadingLevel, Packer, AlignmentType } = await import("docx");
   const { saveAs } = await import("file-saver");
 
-  const accentHex = (style?.accentColor ?? "#111111").replace("#", "");
+  const accentHex = (template?.accentColor ?? style?.accentColor ?? "#111111").replace("#", "");
   const headingFont = style?.fontHeading ?? "Arial";
   const bodyFont = style?.fontBody ?? "Georgia";
+  const effectiveLogo = logo || template?.logoDataUrl;
+  const companyName = template?.companyName || "Minha Empresa";
+  const footerText = template?.footerText || "";
 
   const children: InstanceType<typeof Paragraph>[] = [];
 
-  if (logo) {
+  if (effectiveLogo) {
     try {
       const { ImageRun } = await import("docx");
-      const base64Data = logo.split(",")[1];
-      const mimeRaw = logo.split(";")[0].split(":")[1] ?? "image/png";
+      const base64Data = effectiveLogo.split(",")[1];
+      const mimeRaw = effectiveLogo.split(";")[0].split(":")[1] ?? "image/png";
       const imgType = (mimeRaw === "image/jpeg" ? "jpg" : mimeRaw.split("/")[1]) as "png" | "jpg" | "gif" | "bmp";
       const bytes = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
       children.push(new Paragraph({ children: [new ImageRun({ data: bytes, transformation: { width: 160, height: 53 }, type: imgType })] }));
     } catch { /* skip logo on error */ }
   }
 
+  children.push(new Paragraph({
+    text: companyName.toUpperCase(),
+    heading: HeadingLevel.HEADING_2,
+  }));
   children.push(new Paragraph({
     text: "PROPOSTA COMERCIAL",
     heading: HeadingLevel.TITLE,
@@ -51,6 +61,25 @@ export async function exportToDocx(
   }
   children.push(new Paragraph({ text: "" }));
 
+  if (lineItems.length > 0) {
+    children.push(new Paragraph({
+      text: "Escopo do Investimento",
+      heading: HeadingLevel.HEADING_1,
+    }));
+    for (const item of lineItems) {
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: `${item.name}: `, bold: true, font: bodyFont }),
+          new TextRun({ text: `${item.price}${item.billingCycle === "mensal" ? "/mes" : ""}`, font: bodyFont }),
+        ],
+      }));
+      if (item.description) {
+        children.push(new Paragraph({ children: [new TextRun({ text: item.description, font: bodyFont })] }));
+      }
+    }
+    children.push(new Paragraph({ text: "" }));
+  }
+
   for (const section of sections) {
     children.push(new Paragraph({
       text: section.heading,
@@ -63,6 +92,13 @@ export async function exportToDocx(
       }));
     }
     children.push(new Paragraph({ text: "" }));
+  }
+
+  if (footerText) {
+    children.push(new Paragraph({
+      text: footerText,
+      alignment: AlignmentType.CENTER,
+    }));
   }
 
   const doc = new Document({
@@ -90,19 +126,28 @@ export function printProposal(
   sections: DocumentSection[],
   meta: DocMeta,
   logo?: string,
-  style?: DocStyle
+  style?: DocStyle,
+  lineItems: ProposalLineItem[] = [],
+  template?: ProposalTemplatePreferences
 ) {
-  const accent = style?.accentColor ?? "#111111";
+  const accent = template?.accentColor ?? style?.accentColor ?? "#111111";
   const fontBody = style?.fontBody ? `"${style.fontBody}", Georgia, serif` : "Georgia, serif";
   const fontHeading = style?.fontHeading ? `"${style.fontHeading}", Arial, sans-serif` : "Arial, sans-serif";
   const bgColor = style?.bgColor ?? "#ffffff";
   const textColor = style?.textColor ?? "#111111";
+  const effectiveLogo = logo || template?.logoDataUrl;
+  const companyName = template?.companyName || "Minha Empresa";
+  const footerText = template?.footerText || "";
 
   const sectionsHtml = sections
     .map((s) => `<h2>${s.heading}</h2><div>${s.content.split("\n").map((l) => (l.trim() ? `<p>${l}</p>` : "<br/>")).join("")}</div>`)
     .join("");
 
-  const logoHtml = logo ? `<img src="${logo}" style="max-height:64px;max-width:200px;object-fit:contain;margin-bottom:1.5em;display:block;" />` : "";
+  const logoHtml = effectiveLogo ? `<img src="${effectiveLogo}" style="max-height:64px;max-width:200px;object-fit:contain;margin-bottom:1.5em;display:block;" />` : "";
+  const itemsHtml = lineItems.length
+    ? `<h2>Escopo do Investimento</h2><table><thead><tr><th>Item</th><th>Valor</th></tr></thead><tbody>${lineItems.map((item) => `<tr><td><strong>${item.name}</strong>${item.description ? `<br/><small>${item.description}</small>` : ""}</td><td>${item.price}${item.billingCycle === "mensal" ? "/mes" : ""}</td></tr>`).join("")}</tbody></table>`
+    : "";
+  const footerHtml = footerText ? `<footer>${footerText}</footer>` : "";
 
   const win = window.open("", "_blank");
   if (!win) return;
@@ -112,22 +157,30 @@ export function printProposal(
   h1{text-align:center;font-size:20pt;letter-spacing:.08em;font-weight:700;margin:0 0 1em;font-family:${fontHeading};color:${accent}}
   h2{font-size:11pt;font-weight:700;border-bottom:1px solid ${accent}44;padding-bottom:.3em;margin:2em 0 .6em;text-transform:uppercase;letter-spacing:.04em;font-family:${fontHeading};color:${accent}}
   p{margin:.4em 0}
-  .meta{display:grid;grid-template-columns:repeat(4,1fr);gap:1em;font-size:9pt;margin:.5em 0 1.5em;border:1px solid ${accent}33;padding:.8em 1em;border-radius:4px}
-  .meta-item span{display:block;color:${accent};font-size:8pt;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.2em;font-family:${fontHeading}}
-  hr{border:none;border-top:2px solid ${accent};margin:0 0 1.5em}
-  @page{margin:2cm}
-</style></head><body>
-${logoHtml}
-<h1>PROPOSTA COMERCIAL</h1>
-<div class="meta">
+	  .meta{display:grid;grid-template-columns:repeat(4,1fr);gap:1em;font-size:9pt;margin:.5em 0 1.5em;border:1px solid ${accent}33;padding:.8em 1em;border-radius:4px}
+	  .meta-item span{display:block;color:${accent};font-size:8pt;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.2em;font-family:${fontHeading}}
+	  table{width:100%;border-collapse:collapse;margin:1em 0 1.5em;font-size:10pt}
+	  th,td{border-bottom:1px solid ${accent}22;text-align:left;padding:.55em 0}
+	  th:last-child,td:last-child{text-align:right}
+	  small{color:#666}
+	  footer{border-top:1px solid ${accent}22;margin-top:2em;padding-top:1em;text-align:center;color:#777;font-size:8pt}
+	  hr{border:none;border-top:2px solid ${accent};margin:0 0 1.5em}
+	  @page{margin:2cm}
+	</style></head><body>
+	${logoHtml}
+	<h2 style="border:0;margin:0 0 .2em;color:${accent};font-size:13pt">${companyName.toUpperCase()}</h2>
+	<h1>PROPOSTA COMERCIAL</h1>
+	<div class="meta">
   <div class="meta-item"><span>Para</span>${meta.clienteNome}</div>
   <div class="meta-item"><span>Serviço</span>${meta.servicoPrincipal}</div>
   <div class="meta-item"><span>Valor</span>${meta.valorTotal}</div>
   <div class="meta-item"><span>Data</span>${new Date().toLocaleDateString("pt-BR")}</div>
-</div>
-<hr/>
-${sectionsHtml}
-</body></html>`);
+	</div>
+	<hr/>
+	${itemsHtml}
+	${sectionsHtml}
+	${footerHtml}
+	</body></html>`);
   win.document.close();
   setTimeout(() => { win.focus(); win.print(); }, 400);
 }

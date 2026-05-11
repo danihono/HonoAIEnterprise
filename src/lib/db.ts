@@ -8,6 +8,7 @@ import {
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
 } from "firebase/firestore";
 import { db } from "../firebase";
@@ -76,7 +77,44 @@ export type Proposal = {
   generatedText?: string;
   documentSections?: string;
   docStyle?: string;
+  lineItems?: string;
+  qualityChecklist?: string;
+  templateSnapshot?: string;
   createdAt?: unknown;
+};
+
+export type CatalogBillingCycle = "unico" | "mensal";
+
+export type CatalogItem = {
+  id: string;
+  name: string;
+  description: string;
+  price: string;
+  billingCycle: CatalogBillingCycle;
+  active: boolean;
+  createdAt?: unknown;
+};
+
+export type ProposalLineItem = {
+  id: string;
+  name: string;
+  description?: string;
+  price: string;
+  billingCycle: CatalogBillingCycle;
+};
+
+export type ProposalTemplatePreferences = {
+  companyName: string;
+  footerText: string;
+  accentColor: string;
+  logoDataUrl?: string;
+  updatedAt?: unknown;
+};
+
+export const DEFAULT_PROPOSAL_TEMPLATE: ProposalTemplatePreferences = {
+  companyName: "Minha Empresa",
+  footerText: "Documento Confidencial - Gerado por Hono AI",
+  accentColor: "#2563eb",
 };
 
 // ── Clients ──────────────────────────────────────────────────────────────────
@@ -160,4 +198,41 @@ export async function updateProposal(id: string, data: Partial<Proposal>) {
 
 export async function deleteProposal(id: string) {
   await deleteDoc(doc(db, "proposals", id));
+}
+
+// Catalog
+
+export function subscribeCatalogItems(cb: (items: CatalogItem[]) => void) {
+  const q = query(collection(db, "catalogItems"), orderBy("createdAt", "desc"));
+  return onSnapshot(q, (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as CatalogItem)));
+  });
+}
+
+export async function addCatalogItem(data: Omit<CatalogItem, "id" | "createdAt">) {
+  await addDoc(collection(db, "catalogItems"), { ...data, createdAt: serverTimestamp() });
+}
+
+export async function updateCatalogItem(id: string, data: Partial<CatalogItem>) {
+  await updateDoc(doc(db, "catalogItems", id), normalizeUpdate(data as Record<string, unknown>));
+}
+
+export async function deleteCatalogItem(id: string) {
+  await deleteDoc(doc(db, "catalogItems", id));
+}
+
+// Proposal template preferences
+
+export function subscribeProposalTemplatePreferences(cb: (prefs: ProposalTemplatePreferences) => void) {
+  return onSnapshot(doc(db, "workspaceSettings", "proposalTemplate"), (snap) => {
+    cb({ ...DEFAULT_PROPOSAL_TEMPLATE, ...(snap.exists() ? snap.data() : {}) } as ProposalTemplatePreferences);
+  });
+}
+
+export async function saveProposalTemplatePreferences(data: ProposalTemplatePreferences) {
+  await setDoc(
+    doc(db, "workspaceSettings", "proposalTemplate"),
+    stripUndefined({ ...data, updatedAt: serverTimestamp() }) as Record<string, unknown>,
+    { merge: true }
+  );
 }

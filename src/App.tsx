@@ -7,6 +7,7 @@ import {
   BriefcaseBusiness,
   Building2,
   CalendarDays,
+  ClipboardCheck,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -38,20 +39,30 @@ import {
 } from "lucide-react";
 import React, { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
+  CatalogItem,
   Client,
+  DEFAULT_PROPOSAL_TEMPLATE,
   Proposal,
+  ProposalLineItem,
+  ProposalTemplatePreferences,
   Transaction,
   TransactionOccurrenceOverride,
   TransactionKind,
+  addCatalogItem,
   addClient,
   addProposal,
   addTransaction,
+  deleteCatalogItem,
   deleteClient,
   deleteProposal,
   deleteTransaction,
+  saveProposalTemplatePreferences,
+  subscribeCatalogItems,
   subscribeClients,
+  subscribeProposalTemplatePreferences,
   subscribeProposals,
   subscribeTransactions,
+  updateCatalogItem,
   updateClient,
   updateProposal,
   updateTransaction,
@@ -65,6 +76,8 @@ import {
   generateDocumentSections,
   generateReportContent,
   generateSectionContent,
+  getClaudeErrorMessage,
+  improveProposalFieldText,
   refineDocumentSections,
 } from "./lib/claude";
 import { exportToExcel } from "./lib/excel";
@@ -165,12 +178,16 @@ export function App() {
   const [clients, setClients] = useState<Client[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
+  const [proposalTemplate, setProposalTemplate] = useState<ProposalTemplatePreferences>(DEFAULT_PROPOSAL_TEMPLATE);
 
   useEffect(() => {
     const unsub1 = subscribeClients(setClients);
     const unsub2 = subscribeTransactions(setTransactions);
     const unsub3 = subscribeProposals(setProposals);
-    return () => { unsub1(); unsub2(); unsub3(); };
+    const unsub4 = subscribeCatalogItems(setCatalogItems);
+    const unsub5 = subscribeProposalTemplatePreferences(setProposalTemplate);
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); };
   }, []);
 
   const showToast = (message: string) => {
@@ -182,7 +199,7 @@ export function App() {
   };
 
   const activeLabel = navItems.find((item) => item.id === activePage)?.label ?? "Home";
-  const openProposal = () => setProposalOpen(true);
+  const openProposal = () => setActivePage("propostas");
 
   return (
     <div className={sidebarOpen ? "app-shell" : "app-shell sidebar-collapsed"}>
@@ -229,11 +246,34 @@ export function App() {
           />
         )}
         {activePage === "propostas" && (
-          <ProposalsPage
+          <ProposalWorkspacePage
             proposals={proposals}
-            onCreate={openProposal}
+            clients={clients}
+            catalogItems={catalogItems}
+            template={proposalTemplate}
             onToast={showToast}
             onView={(id) => setProposalViewerId(id)}
+            onOpenEditor={(data) => setProposalEditorData(data)}
+            onAddCatalogItem={async (data) => {
+              await addCatalogItem(data);
+              showToast("Item do catalogo salvo.");
+            }}
+            onUpdateCatalogItem={async (id, data) => {
+              await updateCatalogItem(id, data);
+              showToast("Item do catalogo atualizado.");
+            }}
+            onDeleteCatalogItem={async (id) => {
+              await deleteCatalogItem(id);
+              showToast("Item do catalogo removido.");
+            }}
+            onSaveTemplate={async (data) => {
+              await saveProposalTemplatePreferences(data);
+              showToast("Template salvo.");
+            }}
+            onSaveDraft={async (data) => {
+              await addProposal(data);
+              showToast("Proposta salva no pipeline.");
+            }}
             onDeleteProposal={async (id) => {
               await deleteProposal(id);
               showToast("Proposta removida.");
@@ -321,11 +361,15 @@ export function App() {
           ? [{ id: "1", heading: "Proposta", content: viewed.generatedText }]
           : [];
         const viewedStyle: DocStyle = viewed.docStyle ? JSON.parse(viewed.docStyle) : {};
+        const viewedLineItems: ProposalLineItem[] = viewed.lineItems ? JSON.parse(viewed.lineItems) : [];
+        const viewedTemplate: ProposalTemplatePreferences | undefined = viewed.templateSnapshot ? JSON.parse(viewed.templateSnapshot) : undefined;
         return (
           <ProposalViewer
             proposal={viewed}
             sections={viewedSections}
             docStyle={viewedStyle}
+            lineItems={viewedLineItems}
+            template={viewedTemplate}
             onClose={() => setProposalViewerId(null)}
             onEdit={() => {
               setProposalViewerId(null);
@@ -1475,6 +1519,344 @@ function ProposalsPage({
 
 // ── Clients ───────────────────────────────────────────────────────────────────
 
+const QUALITY_CHECKLIST = [
+  "Direcionar a contato especifico?",
+  "Incluir data de validade?",
+  "Condicoes de pagamento conferidas?",
+  "Escopo claro e sem ambiguidade?",
+  "Proximos passos definidos?",
+  "Valores conferidos?",
+  "Template conferido?",
+];
+
+type ProposalWorkspaceTab = "catalog" | "generator" | "template";
+type ProposalGenerationMode = "ai" | "manual";
+
+function proposalLineItemsTotal(items: ProposalLineItem[]) {
+  const unico = items.filter((item) => item.billingCycle === "unico").reduce((sum, item) => sum + parseValue(item.price), 0);
+  const mensal = items.filter((item) => item.billingCycle === "mensal").reduce((sum, item) => sum + parseValue(item.price), 0);
+  return { unico, mensal };
+}
+
+function proposalTotalLabel(items: ProposalLineItem[]) {
+  const { unico, mensal } = proposalLineItemsTotal(items);
+  if (unico > 0 && mensal > 0) return `${currency.format(unico)} + ${currency.format(mensal)}/mes`;
+  if (mensal > 0) return `${currency.format(mensal)}/mes`;
+  return currency.format(unico);
+}
+
+function buildManualProposalSections(form: ProposalForm, items: ProposalLineItem[], notes: string): DocumentSection[] {
+  const itemLines = items.length
+    ? items.map((item) => `${item.name}: ${item.description || "Escopo conforme alinhamento"} (${item.price}${item.billingCycle === "mensal" ? "/mes" : ""})`).join("\n")
+    : "Itens a definir em conjunto com o cliente.";
+
+  return [
+    { id: "1", heading: "Apresentacao", content: `Esta proposta apresenta a solucao ${form.servicoPrincipal || "comercial"} para ${form.clienteNome || "o cliente"}, com foco em clareza de escopo, investimento e proximos passos.` },
+    { id: "2", heading: "Objetivo", content: form.objetivo || "Formalizar uma proposta objetiva para apoiar a tomada de decisao." },
+    { id: "3", heading: "Escopo do Investimento", content: itemLines },
+    { id: "4", heading: "Investimento", content: `Investimento total: ${form.valorTotal || "R$ 0"}.\nCondicao de pagamento: ${form.condicao || "A combinar."}` },
+    { id: "5", heading: "Proximos Passos", content: notes || "Validar escopo, aprovar investimento e iniciar o cronograma de execucao." },
+  ];
+}
+
+function ProposalPreviewPanel({
+  form,
+  sections,
+  lineItems,
+  docStyle,
+  template,
+}: {
+  form: ProposalFormData;
+  sections: DocumentSection[];
+  lineItems: ProposalLineItem[];
+  docStyle: DocStyle;
+  template: ProposalTemplatePreferences;
+}) {
+  return (
+    <aside className="proposal-preview-panel">
+      <div className="proposal-preview-head">
+        <strong><FileText size={17} /> Pre-visualizacao</strong>
+      </div>
+      <div className="proposal-preview-scroll">
+        <DocumentCanvas sections={sections} meta={form} docStyle={docStyle} lineItems={lineItems} template={template} />
+      </div>
+      <div className="proposal-preview-actions">
+        <button className="primary-button" onClick={() => exportToDocx(sections, form, undefined, docStyle, lineItems, template)}>
+          <Download size={15} /> Baixar Editavel (.doc)
+        </button>
+        <button className="secondary-button" onClick={() => printProposal(sections, form, undefined, docStyle, lineItems, template)}>
+          Imprimir / PDF
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function ProposalWorkspacePage({
+  proposals,
+  clients,
+  catalogItems,
+  template,
+  onToast,
+  onView,
+  onOpenEditor,
+  onAddCatalogItem,
+  onUpdateCatalogItem,
+  onDeleteCatalogItem,
+  onSaveTemplate,
+  onSaveDraft,
+  onDeleteProposal,
+  onUpdateStatus,
+}: {
+  proposals: Proposal[];
+  clients: Client[];
+  catalogItems: CatalogItem[];
+  template: ProposalTemplatePreferences;
+  onToast: (msg: string) => void;
+  onView: (id: string) => void;
+  onOpenEditor: (data: { id?: string; form: ProposalFormData; sections: DocumentSection[]; docStyle: DocStyle }) => void;
+  onAddCatalogItem: (data: Omit<CatalogItem, "id" | "createdAt">) => Promise<void>;
+  onUpdateCatalogItem: (id: string, data: Partial<CatalogItem>) => Promise<void>;
+  onDeleteCatalogItem: (id: string) => Promise<void>;
+  onSaveTemplate: (data: ProposalTemplatePreferences) => Promise<void>;
+  onSaveDraft: (data: Omit<Proposal, "id" | "createdAt">) => Promise<void>;
+  onDeleteProposal: (id: string) => void;
+  onUpdateStatus: (id: string, status: Proposal["status"]) => void;
+}) {
+  const [tab, setTab] = useState<ProposalWorkspaceTab>("generator");
+  const [generationMode, setGenerationMode] = useState<ProposalGenerationMode>("ai");
+  const [clientSearch, setClientSearch] = useState("");
+  const [selectedClientId, setSelectedClientId] = useState("");
+  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
+  const [checkedQuality, setCheckedQuality] = useState<Record<string, boolean>>(() => Object.fromEntries(QUALITY_CHECKLIST.map((item) => [item, true])));
+  const [assistantNotes, setAssistantNotes] = useState("");
+  const [generatedSections, setGeneratedSections] = useState<DocumentSection[]>([]);
+  const [generating, setGenerating] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState("");
+  const [catalogForm, setCatalogForm] = useState<Omit<CatalogItem, "id" | "createdAt">>({ name: "", description: "", price: "", billingCycle: "unico", active: true });
+  const [editingCatalogId, setEditingCatalogId] = useState<string | null>(null);
+  const [templateDraft, setTemplateDraft] = useState<ProposalTemplatePreferences>(template);
+
+  useEffect(() => setTemplateDraft(template), [template]);
+
+  const selectedClient = clients.find((client) => client.id === selectedClientId);
+  const activeCatalogItems = catalogItems.filter((item) => item.active);
+  const selectedLineItems: ProposalLineItem[] = activeCatalogItems
+    .filter((item) => selectedItemIds.includes(item.id))
+    .map((item) => ({ id: item.id, name: item.name, description: item.description, price: item.price, billingCycle: item.billingCycle }));
+  const totalLabel = proposalTotalLabel(selectedLineItems);
+  const serviceTitle = selectedLineItems.map((item) => item.name).join(", ") || "Proposta comercial";
+  const proposalForm: ProposalFormData = {
+    clienteNome: selectedClient?.nome || clientSearch,
+    servicoPrincipal: serviceTitle,
+    objetivo: assistantNotes || `Proposta para ${selectedClient?.nome || clientSearch || "cliente"}`,
+    entregaveis: selectedLineItems.map((item) => `${item.name}: ${item.description || "Sem descricao"}`).join("\n"),
+    prazo: "A definir",
+    criterios: QUALITY_CHECKLIST.filter((item) => checkedQuality[item]).join("\n"),
+    valorTotal: totalLabel,
+    condicao: checkedQuality["Condicoes de pagamento conferidas?"] ? "Conforme condicoes comerciais aprovadas." : "",
+    observacoes: assistantNotes,
+  };
+  const docStyle: DocStyle = { ...DEFAULT_DOC_STYLE, accentColor: templateDraft.accentColor };
+  const previewSections = generatedSections.length
+    ? generatedSections
+    : [{ id: "placeholder", heading: "Texto da proposta", content: "O texto da proposta aparecera aqui apos voce gera-lo no assistente ao lado." }];
+
+  const resetCatalogForm = () => {
+    setCatalogForm({ name: "", description: "", price: "", billingCycle: "unico", active: true });
+    setEditingCatalogId(null);
+  };
+
+  const submitCatalogItem = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!catalogForm.name.trim()) return;
+    if (editingCatalogId) await onUpdateCatalogItem(editingCatalogId, catalogForm);
+    else await onAddCatalogItem(catalogForm);
+    resetCatalogForm();
+  };
+
+  const startEditCatalog = (item: CatalogItem) => {
+    setEditingCatalogId(item.id);
+    setCatalogForm({ name: item.name, description: item.description, price: item.price, billingCycle: item.billingCycle, active: item.active });
+    setTab("catalog");
+  };
+
+  const toggleItem = (id: string) => {
+    setSelectedItemIds((current) => current.includes(id) ? current.filter((itemId) => itemId !== id) : [...current, id]);
+  };
+
+  const generateWorkspaceProposal = async () => {
+    setWorkspaceError("");
+    if (!proposalForm.clienteNome.trim()) {
+      setWorkspaceError("Selecione ou informe um cliente antes de gerar a proposta.");
+      return;
+    }
+    setGenerating(true);
+    try {
+      const sections = generationMode === "manual"
+        ? buildManualProposalSections(proposalForm as ProposalForm, selectedLineItems, assistantNotes)
+        : await generateDocumentSections(proposalForm as ProposalForm);
+      setGeneratedSections(sections);
+      onToast(generationMode === "manual" ? "Rascunho manual criado." : "Proposta gerada com IA.");
+    } catch (err) {
+      setWorkspaceError(getClaudeErrorMessage(err, "gerar proposta"));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const saveDraft = async () => {
+    setWorkspaceError("");
+    if (!proposalForm.clienteNome.trim()) {
+      setWorkspaceError("Selecione ou informe um cliente antes de salvar.");
+      return;
+    }
+    const sections = generatedSections.length ? generatedSections : buildManualProposalSections(proposalForm as ProposalForm, selectedLineItems, assistantNotes);
+    setSavingDraft(true);
+    try {
+      await onSaveDraft({
+        ...proposalForm,
+        status: "rascunho",
+        documentSections: JSON.stringify(sections),
+        docStyle: JSON.stringify(docStyle),
+        lineItems: JSON.stringify(selectedLineItems),
+        qualityChecklist: JSON.stringify(checkedQuality),
+        templateSnapshot: JSON.stringify(templateDraft),
+      });
+      setGeneratedSections(sections);
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
+  const uploadTemplateLogo = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => setTemplateDraft((current) => ({ ...current, logoDataUrl: ev.target?.result as string }));
+    reader.readAsDataURL(file);
+  };
+
+  const saveTemplate = async (e: FormEvent) => {
+    e.preventDefault();
+    await onSaveTemplate(templateDraft);
+  };
+
+  return (
+    <div className="page proposal-workspace-page">
+      <div className="proposal-workspace-head">
+        <div><span className="eyebrow">Catalogo & Propostas</span><h1>Catalogo & Propostas</h1></div>
+        <div className="proposal-tabs">
+          <button className={tab === "catalog" ? "active" : ""} onClick={() => setTab("catalog")}><Store size={16} /> Produtos & Servicos</button>
+          <button className={tab === "generator" ? "active" : ""} onClick={() => setTab("generator")}><FileText size={16} /> Gerador de Propostas</button>
+          <button className={tab === "template" ? "active" : ""} onClick={() => setTab("template")}><Palette size={16} /> Configurar Template</button>
+        </div>
+      </div>
+
+      {tab === "catalog" && (
+        <div className="proposal-two-col slim-preview">
+          <Card className="proposal-work-card">
+            <div className="card-heading"><div><h3>Produtos & Servicos</h3><p>Itens reutilizaveis para montar propostas rapidamente.</p></div></div>
+            <form className="catalog-form" onSubmit={submitCatalogItem}>
+              <label><span>Nome</span><input value={catalogForm.name} onChange={(e) => setCatalogForm((p) => ({ ...p, name: e.target.value }))} placeholder="Ex: Consultoria Follow + Labs" /></label>
+              <label><span>Valor</span><input value={catalogForm.price} onChange={(e) => setCatalogForm((p) => ({ ...p, price: e.target.value }))} placeholder="R$ 5.500" /></label>
+              <label><span>Ciclo</span><select value={catalogForm.billingCycle} onChange={(e) => setCatalogForm((p) => ({ ...p, billingCycle: e.target.value as CatalogItem["billingCycle"] }))}><option value="unico">Unico</option><option value="mensal">Mensal</option></select></label>
+              <label className="catalog-active"><input type="checkbox" checked={catalogForm.active} onChange={(e) => setCatalogForm((p) => ({ ...p, active: e.target.checked }))} /> Ativo</label>
+              <label className="wide"><span>Descricao</span><textarea rows={3} value={catalogForm.description} onChange={(e) => setCatalogForm((p) => ({ ...p, description: e.target.value }))} /></label>
+              <div className="catalog-form-actions">
+                {editingCatalogId && <button type="button" className="secondary-button" onClick={resetCatalogForm}>Cancelar edicao</button>}
+                <button className="primary-button" type="submit"><Plus size={16} /> {editingCatalogId ? "Atualizar item" : "Adicionar item"}</button>
+              </div>
+            </form>
+            <div className="catalog-list">
+              {catalogItems.length === 0 ? <p className="muted-copy">Nenhum item cadastrado ainda.</p> : catalogItems.map((item) => (
+                <div className="catalog-item-row" key={item.id}>
+                  <div><strong>{item.name}</strong><span>{item.price}{item.billingCycle === "mensal" ? " / mensal" : ""}</span>{item.description && <p>{item.description}</p>}</div>
+                  <button className="icon-button" onClick={() => startEditCatalog(item)} title="Editar"><Pencil size={14} /></button>
+                  <button className="icon-button danger" onClick={() => onDeleteCatalogItem(item.id)} title="Remover"><Trash2 size={14} /></button>
+                </div>
+              ))}
+            </div>
+          </Card>
+          <ProposalPreviewPanel form={proposalForm} sections={previewSections} lineItems={selectedLineItems} docStyle={docStyle} template={templateDraft} />
+        </div>
+      )}
+
+      {tab === "generator" && (
+        <div className="proposal-two-col">
+          <div className="proposal-generator-stack">
+            <Card className="proposal-work-card">
+              <h3>1. Selecione os Dados</h3>
+              <div className="proposal-form-grid">
+                <label className="wide"><span>Pesquisar cliente</span><input value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} placeholder="Pesquisar cliente..." /></label>
+                <label className="wide"><span>Cliente</span><select value={selectedClientId} onChange={(e) => setSelectedClientId(e.target.value)}><option value="">Selecione...</option>{clients.filter((client) => client.nome.toLowerCase().includes(clientSearch.toLowerCase())).map((client) => <option key={client.id} value={client.id}>{client.nome}</option>)}</select></label>
+                <div className="wide">
+                  <span className="field-title">Produtos</span>
+                  <div className="proposal-product-list">
+                    {activeCatalogItems.length === 0 ? <button type="button" className="secondary-button" onClick={() => setTab("catalog")}><Plus size={15} /> Cadastrar produto</button> : activeCatalogItems.map((item) => (
+                      <label className="proposal-product-option" key={item.id}><input type="checkbox" checked={selectedItemIds.includes(item.id)} onChange={() => toggleItem(item.id)} /><span><strong>{item.name}</strong><small>{item.price}{item.billingCycle === "mensal" ? " (Mensal)" : ""}</small></span></label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </Card>
+            <Card className="proposal-work-card">
+              <div className="quality-head"><span><ClipboardCheck size={17} /> Checklist de Qualidade</span><strong>{Object.values(checkedQuality).filter(Boolean).length}/{QUALITY_CHECKLIST.length}</strong></div>
+              <div className="quality-progress"><span style={{ width: `${(Object.values(checkedQuality).filter(Boolean).length / QUALITY_CHECKLIST.length) * 100}%` }} /></div>
+              <div className="quality-list">{QUALITY_CHECKLIST.map((item) => <label key={item} className={checkedQuality[item] ? "checked" : ""}><input type="checkbox" checked={!!checkedQuality[item]} onChange={(e) => setCheckedQuality((current) => ({ ...current, [item]: e.target.checked }))} />{item}</label>)}</div>
+            </Card>
+            <Card className="proposal-mode-card">
+              <div><span>MODO DE GERACAO</span><strong>{generationMode === "ai" ? "Gerar com IA" : "Manual"}</strong></div>
+              <div className="segmented-buttons"><button className={generationMode === "ai" ? "active" : ""} onClick={() => setGenerationMode("ai")}><Sparkles size={15} /> IA</button><button className={generationMode === "manual" ? "active" : ""} onClick={() => setGenerationMode("manual")}><Pencil size={15} /> Manual</button></div>
+            </Card>
+            <Card className="proposal-work-card ai-assistant-card">
+              <div className="quality-head"><span><Sparkles size={17} /> Assistente de Vendas IA</span><button className="primary-button sm" onClick={generateWorkspaceProposal} disabled={generating}>{generating ? "Gerando..." : "Iniciar Criacao"}</button></div>
+              <textarea rows={4} value={assistantNotes} onChange={(e) => setAssistantNotes(e.target.value)} placeholder="Informe objetivo, tom, diferenciais, urgencia, objecoes ou qualquer detalhe que a proposta precisa considerar..." />
+              {workspaceError && <p className="form-error">{workspaceError}</p>}
+              <div className="button-row">
+                <button className="secondary-button" onClick={() => onOpenEditor({ form: proposalForm, sections: generatedSections.length ? generatedSections : buildManualProposalSections(proposalForm as ProposalForm, selectedLineItems, assistantNotes), docStyle })}><WandSparkles size={16} /> Maximizar criacao</button>
+                <button className="primary-button" onClick={saveDraft} disabled={savingDraft}>{savingDraft ? "Salvando..." : "Salvar rascunho"}</button>
+              </div>
+            </Card>
+          </div>
+          <ProposalPreviewPanel form={proposalForm} sections={previewSections} lineItems={selectedLineItems} docStyle={docStyle} template={templateDraft} />
+        </div>
+      )}
+
+      {tab === "template" && (
+        <div className="proposal-two-col template-layout">
+          <Card className="proposal-work-card">
+            <h2><Palette size={22} /> Configuracao do Documento</h2>
+            <form className="template-form" onSubmit={saveTemplate}>
+              <label><span>Logo da Empresa (Cabecalho)</span><div className="logo-config-row"><div className="logo-preview-box">{templateDraft.logoDataUrl ? <img src={templateDraft.logoDataUrl} alt="Logo" /> : "Sem Logo"}</div><input type="file" accept="image/*" onChange={uploadTemplateLogo} /></div><small>Recomendado: PNG transparente. Sera embutida no arquivo Word.</small></label>
+              <label><span>Cor Principal (Identidade Visual)</span><input type="color" value={templateDraft.accentColor} onChange={(e) => setTemplateDraft((p) => ({ ...p, accentColor: e.target.value }))} /></label>
+              <label><span>Nome da Empresa</span><input value={templateDraft.companyName} onChange={(e) => setTemplateDraft((p) => ({ ...p, companyName: e.target.value }))} /></label>
+              <label><span>Texto de Rodape</span><input value={templateDraft.footerText} onChange={(e) => setTemplateDraft((p) => ({ ...p, footerText: e.target.value }))} /></label>
+              <button className="primary-button" type="submit"><Check size={16} /> Salvar Preferencias</button>
+            </form>
+          </Card>
+          <ProposalPreviewPanel form={proposalForm} sections={previewSections} lineItems={selectedLineItems.length ? selectedLineItems : [{ id: "sample-1", name: "Servico Exemplo", price: "R$ 1.000,00", billingCycle: "unico" }, { id: "sample-2", name: "Outro Item", price: "R$ 500,00", billingCycle: "unico" }]} docStyle={{ ...docStyle, accentColor: templateDraft.accentColor }} template={templateDraft} />
+        </div>
+      )}
+
+      <Card className="proposal-history-card">
+        <div className="card-heading"><div><h3>Historico do pipeline</h3><p>{proposals.length === 0 ? "Nenhuma proposta salva ainda." : `${proposals.length} proposta(s) salva(s).`}</p></div></div>
+        {proposals.length > 0 && <div className="transaction-list">{proposals.map((p) => (
+          <div key={p.id} className="transaction-row">
+            <div className="transaction-badge receita"><BriefcaseBusiness size={16} /></div>
+            <div className="transaction-info"><strong>{p.clienteNome || "Sem cliente"}</strong><span>{p.servicoPrincipal || "Sem servico"}</span></div>
+            <div className="transaction-value receita">{p.valorTotal || "R$ 0"}</div>
+            <select className={`status-badge ${p.status}`} value={p.status} onChange={(e) => onUpdateStatus(p.id, e.target.value as Proposal["status"])}><option value="rascunho">rascunho</option><option value="enviada">enviada</option><option value="aprovada">aprovada</option></select>
+            <button className="secondary-button view-btn" onClick={() => onView(p.id)}><FileText size={14} /> Ver</button>
+            <button className="icon-button danger" onClick={() => onDeleteProposal(p.id)} aria-label="Remover"><Trash2 size={15} /></button>
+          </div>
+        ))}</div>}
+      </Card>
+    </div>
+  );
+}
+
 function ClientesPage({
   clients,
   onNewClient,
@@ -1761,6 +2143,25 @@ function ClientFormModal({
 
 type ProposalFormData = Omit<Proposal, "id" | "status" | "createdAt" | "generatedText" | "documentSections" | "docStyle">;
 
+type ProposalAiField =
+  | "servicoPrincipal"
+  | "objetivo"
+  | "entregaveis"
+  | "prazo"
+  | "criterios"
+  | "condicao"
+  | "observacoes";
+
+const PROPOSAL_AI_FIELD_LABELS: Record<ProposalAiField, string> = {
+  servicoPrincipal: "Servico principal",
+  objetivo: "Objetivo do projeto",
+  entregaveis: "Entregaveis",
+  prazo: "Prazo esperado",
+  criterios: "Criterios de sucesso",
+  condicao: "Condicao de pagamento",
+  observacoes: "Observacoes comerciais",
+};
+
 const DEFAULT_DOC_STYLE: DocStyle = {
   fontBody: "Georgia",
   fontHeading: "Arial",
@@ -1784,6 +2185,7 @@ function ProposalModal({
   const [generating, setGenerating] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [error, setError] = useState("");
+  const [improvingFields, setImprovingFields] = useState<Partial<Record<ProposalAiField, boolean>>>({});
   const [template, setTemplate] = useState("");
   const [templateFileName, setTemplateFileName] = useState("");
   const [detectedStyle, setDetectedStyle] = useState<DocStyle>({});
@@ -1797,6 +2199,46 @@ function ProposalModal({
   const set = (field: keyof ProposalFormData) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
       setForm((prev) => ({ ...prev, [field]: e.target.value }));
+
+  const handleImproveField = async (field: ProposalAiField) => {
+    const label = PROPOSAL_AI_FIELD_LABELS[field];
+    const currentText = form[field] ?? "";
+    const hasContext = Object.entries(form).some(([key, value]) =>
+      key !== field && key !== "valorTotal" && String(value ?? "").trim()
+    );
+
+    setError("");
+    if (!currentText.trim() && !hasContext) {
+      setError(`Preencha algum contexto antes de melhorar "${label}" com IA.`);
+      return;
+    }
+
+    setImprovingFields((prev) => ({ ...prev, [field]: true }));
+    try {
+      const improved = await improveProposalFieldText(label, currentText, form as ProposalForm);
+      setForm((prev) => ({ ...prev, [field]: improved }));
+    } catch (err) {
+      setError(getClaudeErrorMessage(err, `melhorar ${label.toLowerCase()}`));
+    } finally {
+      setImprovingFields((prev) => ({ ...prev, [field]: false }));
+    }
+  };
+
+  const fieldLabel = (field: ProposalAiField, label: string) => (
+    <span className="field-label-row">
+      <span>{label}</span>
+      <button
+        type="button"
+        className="field-ai-button"
+        onClick={() => handleImproveField(field)}
+        disabled={!!improvingFields[field] || generating || extracting}
+        title={`Melhorar ${label.toLowerCase()} com IA`}
+      >
+        {improvingFields[field] ? <Sparkles size={13} className="spin" /> : <WandSparkles size={13} />}
+        Melhorar
+      </button>
+    </span>
+  );
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1824,8 +2266,8 @@ function ProposalModal({
       const sections = await generateDocumentSections(form as ProposalForm, template || undefined);
       const docStyle = { ...DEFAULT_DOC_STYLE, ...detectedStyle };
       onGenerated({ form, sections, docStyle });
-    } catch {
-      setError("Erro ao gerar proposta. Verifique a chave da API no arquivo .env e tente novamente.");
+    } catch (err) {
+      setError(getClaudeErrorMessage(err, "gerar proposta"));
     } finally {
       setGenerating(false);
     }
@@ -1858,8 +2300,14 @@ function ProposalModal({
                   </select>
                 </label>
                 <label><span>Nome do cliente (manual)</span><input placeholder="Ou digite o nome..." value={form.clienteNome} onChange={set("clienteNome")} /></label>
-                <label><span>Serviço principal</span><input placeholder="Ex: Gestão de tráfego, consultoria..." value={form.servicoPrincipal} onChange={set("servicoPrincipal")} /></label>
-                <label className="wide"><span>Objetivo do projeto</span><textarea rows={3} value={form.objetivo} onChange={set("objetivo")} /></label>
+                <label>
+                  {fieldLabel("servicoPrincipal", "Serviço principal")}
+                  <input placeholder="Ex: Gestão de tráfego, consultoria..." value={form.servicoPrincipal} onChange={set("servicoPrincipal")} />
+                </label>
+                <label className="wide">
+                  {fieldLabel("objetivo", "Objetivo do projeto")}
+                  <textarea rows={3} value={form.objetivo} onChange={set("objetivo")} />
+                </label>
                 <label className="wide template-upload-label">
                   <span>Upload do modelo (.pdf ou .docx) <em style={{ opacity: 0.5, fontWeight: 400 }}>— o Claude copia a estrutura</em></span>
                   <input type="file" accept=".pdf,.docx,.doc,.txt" onChange={handleFileUpload} className="file-input" disabled={extracting} />
@@ -1882,9 +2330,18 @@ function ProposalModal({
             <div className="form-step">
               <h3>Defina o escopo com clareza.</h3>
               <div className="form-grid">
-                <label><span>Entregáveis</span><input value={form.entregaveis} onChange={set("entregaveis")} /></label>
-                <label><span>Prazo esperado</span><input value={form.prazo} onChange={set("prazo")} /></label>
-                <label className="wide"><span>Critérios de sucesso</span><textarea rows={4} value={form.criterios} onChange={set("criterios")} /></label>
+                <label>
+                  {fieldLabel("entregaveis", "Entregáveis")}
+                  <input value={form.entregaveis} onChange={set("entregaveis")} />
+                </label>
+                <label>
+                  {fieldLabel("prazo", "Prazo esperado")}
+                  <input value={form.prazo} onChange={set("prazo")} />
+                </label>
+                <label className="wide">
+                  {fieldLabel("criterios", "Critérios de sucesso")}
+                  <textarea rows={4} value={form.criterios} onChange={set("criterios")} />
+                </label>
               </div>
             </div>
           )}
@@ -1893,8 +2350,14 @@ function ProposalModal({
               <h3>Organize o investimento.</h3>
               <div className="form-grid">
                 <label><span>Valor total</span><input inputMode="decimal" placeholder="R$ 0,00" value={form.valorTotal} onChange={set("valorTotal")} /></label>
-                <label><span>Condição de pagamento</span><input value={form.condicao} onChange={set("condicao")} /></label>
-                <label className="wide"><span>Observações comerciais</span><textarea rows={4} value={form.observacoes} onChange={set("observacoes")} /></label>
+                <label>
+                  {fieldLabel("condicao", "Condição de pagamento")}
+                  <input value={form.condicao} onChange={set("condicao")} />
+                </label>
+                <label className="wide">
+                  {fieldLabel("observacoes", "Observações comerciais")}
+                  <textarea rows={4} value={form.observacoes} onChange={set("observacoes")} />
+                </label>
               </div>
             </div>
           )}
@@ -1937,13 +2400,21 @@ function DocumentCanvas({
   meta,
   logo,
   docStyle,
+  lineItems = [],
+  template,
 }: {
   sections: DocumentSection[];
   meta: { clienteNome: string; servicoPrincipal: string; valorTotal: string };
   logo?: string;
   docStyle?: DocStyle;
+  lineItems?: ProposalLineItem[];
+  template?: ProposalTemplatePreferences;
 }) {
   const ds = docStyle ?? {};
+  const accent = template?.accentColor ?? ds.accentColor ?? "#111111";
+  const effectiveLogo = logo || template?.logoDataUrl;
+  const companyName = template?.companyName || "Minha Empresa";
+  const footerText = template?.footerText || "";
   return (
     <div
       className="document-canvas"
@@ -1951,11 +2422,14 @@ function DocumentCanvas({
         fontFamily: ds.fontBody ? `"${ds.fontBody}", Georgia, serif` : undefined,
         color: ds.textColor ?? undefined,
         backgroundColor: ds.bgColor ?? undefined,
-        "--doc-accent": ds.accentColor ?? "#111111",
+        "--doc-accent": accent,
       } as React.CSSProperties}
     >
-      {logo && <img src={logo} alt="Logo" className="doc-logo" />}
-      <div className="doc-title">PROPOSTA COMERCIAL</div>
+      {effectiveLogo && <img src={effectiveLogo} alt="Logo" className="doc-logo" />}
+      <div className="doc-brand-row">
+        <strong>{companyName.toUpperCase()}</strong>
+        <span>PROPOSTA<br />{new Date().toLocaleDateString("pt-BR")}</span>
+      </div>
       <div className="doc-meta-bar">
         {[["Para", meta.clienteNome], ["Serviço", meta.servicoPrincipal], ["Valor", meta.valorTotal], ["Data", new Date().toLocaleDateString("pt-BR")]].map(
           ([label, val]) => (
@@ -1967,6 +2441,27 @@ function DocumentCanvas({
         )}
       </div>
       <hr className="doc-divider" />
+      {lineItems.length > 0 && (
+        <div className="doc-section doc-line-items">
+          <h2 className="doc-section-heading">Escopo do Investimento</h2>
+          <div className="doc-items-table">
+            <div className="doc-items-head"><span>Item</span><span>Valor</span></div>
+            {lineItems.map((item) => (
+              <div className="doc-items-row" key={item.id}>
+                <span>
+                  <strong>{item.name}</strong>
+                  {item.description && <small>{item.description}</small>}
+                </span>
+                <strong>{item.price}{item.billingCycle === "mensal" ? "/mes" : ""}</strong>
+              </div>
+            ))}
+          </div>
+          <div className="doc-total-row">
+            <span>Total</span>
+            <strong>{meta.valorTotal || "R$ 0"}</strong>
+          </div>
+        </div>
+      )}
       {sections.map((s) => (
         <div key={s.id} className="doc-section">
           <h2 className="doc-section-heading">{s.heading}</h2>
@@ -1977,6 +2472,7 @@ function DocumentCanvas({
           </div>
         </div>
       ))}
+      {footerText && <div className="doc-footer">{footerText}</div>}
     </div>
   );
 }
@@ -2190,16 +2686,20 @@ function ProposalViewer({
   proposal,
   sections,
   docStyle,
+  lineItems,
+  template,
   onClose,
   onEdit,
 }: {
   proposal: Proposal;
   sections: DocumentSection[];
   docStyle: DocStyle;
+  lineItems?: ProposalLineItem[];
+  template?: ProposalTemplatePreferences;
   onClose: () => void;
   onEdit: () => void;
 }) {
-  const logo = localStorage.getItem("workspace_logo") ?? undefined;
+  const logo = template?.logoDataUrl || localStorage.getItem("workspace_logo") || undefined;
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -2210,10 +2710,10 @@ function ProposalViewer({
             <strong>{proposal.clienteNome} — {proposal.servicoPrincipal}</strong>
           </div>
           <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-            <button className="secondary-button" onClick={() => printProposal(sections, proposal, logo, docStyle)}>
+            <button className="secondary-button" onClick={() => printProposal(sections, proposal, logo, docStyle, lineItems ?? [], template)}>
               <FileText size={14} /> PDF
             </button>
-            <button className="secondary-button" onClick={() => exportToDocx(sections, proposal, logo, docStyle)}>
+            <button className="secondary-button" onClick={() => exportToDocx(sections, proposal, logo, docStyle, lineItems ?? [], template)}>
               <Download size={14} /> Word
             </button>
             <button className="secondary-button" onClick={onEdit}><WandSparkles size={14} /> Editar com IA</button>
@@ -2222,7 +2722,7 @@ function ProposalViewer({
         </div>
         <div className="viewer-body">
           {sections.length > 0 ? (
-            <DocumentCanvas sections={sections} meta={proposal} logo={logo} docStyle={docStyle} />
+            <DocumentCanvas sections={sections} meta={proposal} logo={logo} docStyle={docStyle} lineItems={lineItems ?? []} template={template} />
           ) : (
             <div className="viewer-summary">
               <p><strong>Objetivo:</strong> {proposal.objetivo || "—"}</p>

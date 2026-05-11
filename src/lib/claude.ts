@@ -1,8 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Proposal, Transaction } from "./db";
 
+const CLAUDE_MODEL = import.meta.env.VITE_CLAUDE_MODEL || "claude-sonnet-4-6";
+
 const client = new Anthropic({
   apiKey: import.meta.env.VITE_ANTHROPIC_API_KEY,
+  // Browser mode exposes the VITE_ API key in the client bundle. Keep this for
+  // the current frontend-only flow; move calls server-side before public use.
   dangerouslyAllowBrowser: true,
 });
 
@@ -27,6 +31,37 @@ export type ProposalForm = {
   condicao: string;
   observacoes: string;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object";
+}
+
+export function getClaudeErrorMessage(error: unknown, action = "processar IA"): string {
+  if (!import.meta.env.VITE_ANTHROPIC_API_KEY) {
+    return `Erro ao ${action}: chave Anthropic ausente. Configure VITE_ANTHROPIC_API_KEY no .env.`;
+  }
+
+  const status = isRecord(error) && typeof error.status === "number" ? error.status : undefined;
+  const type =
+    isRecord(error) && isRecord(error.error) && typeof error.error.type === "string"
+      ? error.error.type
+      : isRecord(error) && typeof error.type === "string"
+      ? error.type
+      : undefined;
+  const message =
+    isRecord(error) && typeof error.message === "string"
+      ? error.message
+      : "A API recusou a solicitação.";
+  const details = [status ? `status ${status}` : "", type].filter(Boolean).join(" / ");
+
+  if (status === 401) return `Erro ao ${action}: chave Anthropic inválida ou expirada.`;
+  if (status === 403) return `Erro ao ${action}: a chave não tem permissão para usar este recurso/modelo.`;
+  if (status === 404) return `Erro ao ${action}: modelo "${CLAUDE_MODEL}" não encontrado ou indisponível para esta conta.`;
+  if (status === 429) return `Erro ao ${action}: limite de uso/rate limit da Anthropic atingido.`;
+  if (status && status >= 500) return `Erro ao ${action}: instabilidade temporária na Anthropic (${details}).`;
+
+  return `Erro ao ${action}${details ? ` (${details})` : ""}: ${message}`;
+}
 
 function parseJsonSections(text: string, fallback: DocumentSection[]): DocumentSection[] {
   const match = text.match(/\{[\s\S]*\}/);
@@ -66,7 +101,7 @@ Retorne APENAS um objeto JSON (sem markdown, sem texto adicional):
 }`;
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-6",
+    model: CLAUDE_MODEL,
     max_tokens: 4096,
     system: SYSTEM_PROMPT,
     messages: [
@@ -93,12 +128,48 @@ ${sectionInstruction}`,
   return parseJsonSections(text, [{ id: "1", heading: "Proposta", content: text }]);
 }
 
+export async function improveProposalFieldText(
+  fieldLabel: string,
+  currentText: string,
+  form: ProposalForm
+): Promise<string> {
+  const response = await client.messages.create({
+    model: CLAUDE_MODEL,
+    max_tokens: 900,
+    system: SYSTEM_PROMPT,
+    messages: [
+      {
+        role: "user",
+        content: `Melhore o campo "${fieldLabel}" de uma proposta comercial em portugues brasileiro.
+
+Contexto da proposta:
+Cliente: ${form.clienteNome || "Nao informado"}
+Servico Principal: ${form.servicoPrincipal || "Nao informado"}
+Objetivo: ${form.objetivo || "Nao informado"}
+Entregaveis: ${form.entregaveis || "Nao informado"}
+Prazo: ${form.prazo || "Nao informado"}
+Criterios de Sucesso: ${form.criterios || "Nao informado"}
+Valor Total: ${form.valorTotal || "Nao informado"}
+Condicao de Pagamento: ${form.condicao || "Nao informado"}
+Observacoes: ${form.observacoes || "Nao informado"}
+
+Texto atual do campo:
+${currentText || "(campo vazio)"}
+
+Retorne apenas o novo texto para este campo, sem titulo, sem markdown e sem explicacoes. Preserve dados objetivos como valores, prazos e nomes quando existirem. Se o campo estiver vazio, crie uma sugestao especifica usando somente o contexto informado.`,
+      },
+    ],
+  });
+
+  return response.content[0].type === "text" ? response.content[0].text.trim() : currentText;
+}
+
 export async function generateSectionContent(
   heading: string,
   form: ProposalForm
 ): Promise<string> {
   const response = await client.messages.create({
-    model: "claude-sonnet-4-6",
+    model: CLAUDE_MODEL,
     max_tokens: 1024,
     system: SYSTEM_PROMPT,
     messages: [
@@ -124,7 +195,7 @@ export async function refineDocumentSections(
   const currentContent = sections.map((s) => `## ${s.heading}\n${s.content}`).join("\n\n");
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-6",
+    model: CLAUDE_MODEL,
     max_tokens: 4096,
     system: SYSTEM_PROMPT,
     messages: [
@@ -250,7 +321,7 @@ Objetivo: ${proposal.objetivo.slice(0, 600)}`
     schemaBlocks.push(`"riscos": [{"risco":"","probabilidade":"Alta|Média|Baixa","impacto":"Alto|Médio|Baixo","mitigacao":""}]`);
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-6",
+    model: CLAUDE_MODEL,
     max_tokens: 4096,
     system: REPORT_SYSTEM_PROMPT,
     messages: [
