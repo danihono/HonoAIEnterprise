@@ -221,6 +221,43 @@ export async function deleteCatalogItem(id: string) {
   await deleteDoc(doc(db, "catalogItems", id));
 }
 
+// ── Metas & Sonhos ────────────────────────────────────────────────────────────
+
+export type MetaSonhoTipo = "meta" | "sonho";
+export type MetaSonhoStatus = "ativa" | "realizada";
+
+export type MetaSonho = {
+  id: string;
+  tipo: MetaSonhoTipo;
+  titulo: string;
+  descricao?: string;
+  cor: string;
+  imagemDataUrl?: string;
+  prazo?: string;
+  categoria?: string;
+  status: MetaSonhoStatus;
+  createdAt?: unknown;
+};
+
+export function subscribeMetasSonhos(cb: (items: MetaSonho[]) => void) {
+  const q = query(collection(db, "metasSonhos"), orderBy("createdAt", "desc"));
+  return onSnapshot(q, (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as MetaSonho)));
+  });
+}
+
+export async function addMetaSonho(data: Omit<MetaSonho, "id" | "createdAt">) {
+  await addDoc(collection(db, "metasSonhos"), stripUndefined({ ...data, createdAt: serverTimestamp() }) as Record<string, unknown>);
+}
+
+export async function updateMetaSonho(id: string, data: Partial<Omit<MetaSonho, "id" | "createdAt">>) {
+  await updateDoc(doc(db, "metasSonhos", id), normalizeUpdate(data as Record<string, unknown>));
+}
+
+export async function deleteMetaSonho(id: string) {
+  await deleteDoc(doc(db, "metasSonhos", id));
+}
+
 // Proposal template preferences
 
 export function subscribeProposalTemplatePreferences(cb: (prefs: ProposalTemplatePreferences) => void) {
